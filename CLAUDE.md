@@ -79,7 +79,7 @@ npm run package        # Creates .vsix file
 - [x] Registry read/write
 - [x] CLI with git detection, registry lookup, HTTP request
 - [x] Basic file opening
-- [x] Integration tests (30 total: 10 CLI + 20 extension)
+- [x] Integration tests (39 total: 16 CLI + 23 extension)
 - [x] Window focus (brings VS Code to foreground)
 - [x] Clean CLI output (`Opened: filename`)
 - [x] Zen mode (`-z` flag hides sidebar/panels)
@@ -89,6 +89,9 @@ npm run package        # Creates .vsix file
 - [x] Reveal in Explorer (shows file in sidebar)
 - [x] Duplicate-detection (focuses existing tab instead of opening twice)
 - [x] Case-insensitive file paths
+- [x] Directory support (`vo <folder>` opens folder in VS Code)
+- [x] Path-based fallback (files under any open workspace auto-route)
+- [x] Orphan workspace config (default window for orphan files via config.json)
 
 ### Phase 2 (Pending)
 - [ ] Reveal in Explorer (R9)
@@ -102,7 +105,7 @@ npm run package        # Creates .vsix file
 - [ ] Registry cleanup (prune stale entries)
 
 ### Phase 4 (Nice-to-Have)
-- [ ] Directory support: `vo <folder>`
+- [x] Directory support: `vo <folder>` (moved to Phase 1)
 - [ ] Auto zen mode for orphan files
 - [ ] Multiple files: `vo *.md`
 

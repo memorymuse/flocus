@@ -436,15 +436,18 @@ test_list_open_files() {
     assert_contains "$output" "/project/test.py" "Should list test.py" || return 1
 }
 
-test_list_requires_git_repo() {
-    # Create a directory that's not a git repo
+test_list_no_matching_window() {
+    # Create a directory that's not a git repo and not under any workspace
     local dir="$TEST_TMPDIR/not-a-repo"
     mkdir -p "$dir"
+
+    # Empty registry
+    echo '{"version": 1, "windows": []}' > "$XDG_CONFIG_HOME/vo/registry.json"
 
     local output
     output=$(cd "$dir" && "$VO_CLI" --list 2>&1 || true)
 
-    assert_contains "$output" "Not in a git repository" "Should error when not in git repo"
+    assert_contains "$output" "No VS Code window found" "Should error when no matching window"
 }
 
 test_list_requires_vscode_window() {
@@ -458,6 +461,87 @@ test_list_requires_vscode_window() {
     output=$(cd "$repo" && "$VO_CLI" --list 2>&1 || true)
 
     assert_contains "$output" "No VS Code window found" "Should error when no window found"
+}
+
+test_open_directory() {
+    local dir="$TEST_TMPDIR/myproject"
+    mkdir -p "$dir"
+
+    local output
+    output=$(VO_DRY_RUN=1 "$VO_CLI" "$dir" 2>&1)
+
+    assert_contains "$output" "[dry-run] code $dir" "Should open directory with code command"
+}
+
+test_path_based_fallback() {
+    # Create a non-git directory with a file
+    local workspace="$TEST_TMPDIR/workspace"
+    mkdir -p "$workspace/subdir"
+    echo "content" > "$workspace/subdir/file.txt"
+
+    # Start test server
+    local log_file="$TEST_TMPDIR/request.json"
+    local port
+    port=$(start_test_server "$log_file")
+
+    # Register the workspace (not a git repo)
+    echo '{
+        "version": 1,
+        "windows": [{
+            "workspace": "'"$workspace"'",
+            "port": '"$port"',
+            "pid": 99999,
+            "lastActive": 1737561234567
+        }]
+    }' > "$XDG_CONFIG_HOME/vo/registry.json"
+
+    # Open a file under the workspace
+    "$VO_CLI" "$workspace/subdir/file.txt"
+
+    # Should have received the request
+    [[ -f "$log_file" ]] || return 1
+    local request
+    request=$(cat "$log_file")
+    assert_contains "$request" "$workspace/subdir/file.txt" "Request should contain file path"
+}
+
+test_orphan_workspace_config() {
+    # Create an orphan file (not in git, not under any workspace)
+    local orphan_dir="$TEST_TMPDIR/orphan"
+    local orphan_workspace="$TEST_TMPDIR/orphan-ws"
+    mkdir -p "$orphan_dir"
+    mkdir -p "$orphan_workspace"
+    echo "content" > "$orphan_dir/file.txt"
+
+    # Start test server for orphan workspace
+    local log_file="$TEST_TMPDIR/request.json"
+    local port
+    port=$(start_test_server "$log_file")
+
+    # Register the orphan workspace
+    echo '{
+        "version": 1,
+        "windows": [{
+            "workspace": "'"$orphan_workspace"'",
+            "port": '"$port"',
+            "pid": 99999,
+            "lastActive": 1737561234567
+        }]
+    }' > "$XDG_CONFIG_HOME/vo/registry.json"
+
+    # Configure orphan workspace
+    echo '{
+        "orphanWorkspace": "'"$orphan_workspace"'"
+    }' > "$XDG_CONFIG_HOME/vo/config.json"
+
+    # Open the orphan file
+    "$VO_CLI" "$orphan_dir/file.txt"
+
+    # Should have been sent to orphan workspace
+    [[ -f "$log_file" ]] || return 1
+    local request
+    request=$(cat "$log_file")
+    assert_contains "$request" "$orphan_dir/file.txt" "Request should contain orphan file path"
 }
 
 #-------------------------------------------------------------------------------
@@ -498,8 +582,11 @@ main() {
     run_test "Fallback when no registry exists" test_fallback_when_no_registry
     run_test "Fallback when server is dead" test_fallback_when_server_dead
     run_test "List open files" test_list_open_files
-    run_test "List requires git repo" test_list_requires_git_repo
+    run_test "List requires matching window" test_list_no_matching_window
     run_test "List requires VS Code window" test_list_requires_vscode_window
+    run_test "Open directory" test_open_directory
+    run_test "Path-based fallback" test_path_based_fallback
+    run_test "Orphan workspace config" test_orphan_workspace_config
 
     echo ""
     echo "----------------------------------------"

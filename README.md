@@ -31,6 +31,9 @@ vo src/main.py    # Opens in the VS Code window that has this project open
 - **Custom editors**: `.md` files open in Mark Sharp by default
 - **Reveal in Explorer**: Shows the file in the sidebar
 - **List open files**: `vo -l` prints all open files in the current project
+- **Directory support**: `vo ~/projects/myapp` opens folder in VS Code
+- **Path-based fallback**: Files under any open workspace auto-route there
+- **Orphan workspace**: Configure a default window for files outside any project
 - **Fallback**: Falls back to `code` if no matching window found
 
 ## Installation
@@ -99,9 +102,28 @@ vo -l
 
 ## Configuration
 
-By default, `.md` files open in Mark Sharp editor. Use `--raw` to bypass this and use VS Code's default editor.
+Config file: `~/.config/vo/config.json`
 
-Custom editor mappings via `~/.config/vo/config.json` are planned for a future release.
+```json
+{
+  "orphanWorkspace": "/home/user/scratch"
+}
+```
+
+**orphanWorkspace**: Default VS Code window for files not in any git repo or open workspace. Open this folder in VS Code, and orphan files will route there.
+
+### Matching Priority
+
+When you run `vo <file>`, it tries to find the right VS Code window in this order:
+
+1. **Git root** — If file is in a git repo, find window with that repo open
+2. **Parent workspace** — If file is under any open VS Code folder
+3. **Orphan workspace** — If configured in config.json
+4. **Fallback** — Opens with `code` command
+
+### Custom Editors
+
+By default, `.md` files open in Mark Sharp editor. Use `--raw` to bypass this.
 
 ## Troubleshooting
 

@@ -30,8 +30,28 @@ set -euo pipefail
 
 REGISTRY_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/vo"
 REGISTRY_FILE="$REGISTRY_DIR/registry.json"
+CONFIG_FILE="$REGISTRY_DIR/config.json"
 HEALTH_TIMEOUT=0.5  # seconds to wait for health check
 REQUEST_TIMEOUT=2   # seconds to wait for open request
+
+#-------------------------------------------------------------------------------
+# Config Helpers
+#-------------------------------------------------------------------------------
+
+get_config_value() {
+    local key="$1"
+    local default="${2:-}"
+
+    if [[ -f "$CONFIG_FILE" ]]; then
+        local value
+        value=$(jq -r --arg key "$key" '.[$key] // empty' "$CONFIG_FILE" 2>/dev/null)
+        if [[ -n "$value" ]]; then
+            echo "$value"
+            return
+        fi
+    fi
+    echo "$default"
+}
 
 #-------------------------------------------------------------------------------
 # Usage
@@ -40,24 +60,69 @@ REQUEST_TIMEOUT=2   # seconds to wait for open request
 usage() {
     cat <<EOF
 Usage: vo [OPTIONS] <file>[:<line>]
+       vo [OPTIONS] <directory>
        vo -l
 
-Open a file in the VS Code window that has the matching project open.
+Open a file or directory in the correct VS Code window.
 
 Options:
   -l, --list    List all open files in the current project's VS Code window
   -z, --zen     Zen mode: hide Explorer sidebar and panels
   --raw         Use VS Code's default editor (bypass custom editor mappings)
+  --all         Open all files in directory (NOT YET IMPLEMENTED)
+  --agent       Show context for AI agents
   -h, --help    Show this help message
 
 Examples:
   vo src/main.py          Open file in correct project window
   vo src/main.py:42       Open at line 42
+  vo ~/projects/myapp     Open directory (registers for future vo calls)
+  vo src/ --all           Open all files in src/ (NOT YET IMPLEMENTED)
   vo -z README.md         Open in zen mode
   vo --raw doc.md         Open markdown with default editor, not Mark Sharp
   vo -l                   List all open files
 
-If no matching VS Code window is found, falls back to opening a new window.
+Matching priority:
+  1. Git repository root (if file is in a git repo)
+  2. Parent workspace (if file is under an open VS Code folder)
+  3. Orphan workspace (if configured in ~/.config/vo/config.json)
+  4. Falls back to 'code' command
+
+Config (~/.config/vo/config.json):
+  {
+    "orphanWorkspace": "/path/to/default/workspace"
+  }
+EOF
+}
+
+agent_context() {
+    cat <<EOF
+vo - Context for AI Agents
+==========================
+
+vo opens files in the *correct* VS Code window when multiple are open.
+
+Key insight:
+  - code ~/projects/myapp/src/main.py  →  opens in random/new window
+  - vo ~/projects/myapp/src/main.py    →  opens in the window with myapp open
+
+Setup: Open the project folder in VS Code first. This registers it.
+Then vo routes files there automatically. For one-off files outside
+any project, the default orphan workspace works fine.
+
+Match priority (automatic — just run 'vo <file>'):
+  1. Git root      — file in a git repo → window with that repo open
+  2. Parent workspace — file under any open VS Code folder
+  3. Default orphan workspace — configured in ~/.config/vo/config.json
+  4. Fallback      — runs 'code' command (opens in last focused window)
+
+Common patterns:
+  vo <file>        Open in correct window
+  vo <dir>         Open/focus folder (seeds registry for future vo calls)
+  vo -l            List open tabs
+  vo -z <file>     Zen mode (hide sidebar/panels)
+
+Refer to 'vo -h' for full option details.
 EOF
 }
 
@@ -98,6 +163,10 @@ parse_args() {
                 ;;
             -h|--help)
                 usage
+                exit 0
+                ;;
+            --agent)
+                agent_context
                 exit 0
                 ;;
             -*)
@@ -192,6 +261,32 @@ find_matching_port() {
     echo "$port"
 }
 
+# Find a registered workspace that contains the given path
+# Returns: "workspace:port" or empty string
+find_parent_workspace() {
+    local file_path="$1"
+
+    if [[ ! -f "$REGISTRY_FILE" ]]; then
+        echo ""
+        return
+    fi
+
+    # Get all registered workspaces, sorted by path length (longest first)
+    # This ensures we match the most specific workspace
+    local result
+    result=$(jq -r --arg path "$file_path" '
+        .windows // []
+        | map(. as $w | select($path | startswith($w.workspace + "/")))
+        | sort_by(-(.workspace | length))
+        | .[0] | if . then "\(.workspace):\(.port)" else empty end
+    ' "$REGISTRY_FILE" 2>/dev/null || echo "")
+
+    if [[ -n "$result" ]]; then
+        debug "Found parent workspace: $result"
+    fi
+    echo "$result"
+}
+
 check_server_health() {
     local port="$1"
 
@@ -278,7 +373,7 @@ main() {
 
     # Validate file argument
     if [[ -z "$FILE" ]]; then
-        echo "Error: No file specified" >&2
+        echo "Error: No file or directory specified" >&2
         echo "" >&2
         usage >&2
         exit 1
@@ -289,15 +384,90 @@ main() {
     abs_path=$(resolve_absolute_path "$FILE")
     debug "Resolved path: $abs_path"
 
-    # Step 2: Detect git root
+    # Step 2: Handle directories
+    if [[ -d "$abs_path" ]]; then
+        open_directory "$abs_path"
+        exit $?
+    fi
+
+    # Step 3: Open file
+    open_file "$abs_path"
+}
+
+#-------------------------------------------------------------------------------
+# Open Directory
+#-------------------------------------------------------------------------------
+
+open_directory() {
+    local dir_path="$1"
+    debug "Opening directory: $dir_path"
+
+    # Check if this directory is already registered
+    local port
+    port=$(find_matching_port "$dir_path")
+
+    if [[ -n "$port" ]] && check_server_health "$port"; then
+        debug "Directory already open, focusing window"
+        # Just focus the window - no file to open
+        if [[ "${VO_DRY_RUN:-}" == "1" ]]; then
+            echo "[dry-run] code $dir_path"
+        else
+            code "$dir_path"
+            echo "Focused: $(basename "$dir_path")"
+        fi
+    else
+        # Open the directory in a new VS Code window
+        if [[ "${VO_DRY_RUN:-}" == "1" ]]; then
+            echo "[dry-run] code $dir_path"
+        else
+            code "$dir_path"
+            echo "Opened: $(basename "$dir_path")"
+        fi
+    fi
+}
+
+#-------------------------------------------------------------------------------
+# Open File
+#-------------------------------------------------------------------------------
+
+open_file() {
+    local abs_path="$1"
+
+    # Step 1: Try git root matching
     local git_root
     git_root=$(detect_git_root "$abs_path")
     debug "Git root: ${git_root:-<none>}"
 
-    # Step 3: Find matching VS Code window
     local port=""
+    local workspace=""
+
     if [[ -n "$git_root" ]]; then
         port=$(find_matching_port "$git_root")
+        workspace="$git_root"
+    fi
+
+    # Step 2: Try path-based fallback (file under any registered workspace)
+    if [[ -z "$port" ]]; then
+        local parent_result
+        parent_result=$(find_parent_workspace "$abs_path")
+        if [[ -n "$parent_result" ]]; then
+            workspace="${parent_result%%:*}"
+            port="${parent_result##*:}"
+            debug "Using parent workspace: $workspace on port $port"
+        fi
+    fi
+
+    # Step 3: Try orphan workspace from config
+    if [[ -z "$port" ]]; then
+        local orphan_workspace
+        orphan_workspace=$(get_config_value "orphanWorkspace")
+        if [[ -n "$orphan_workspace" ]]; then
+            port=$(find_matching_port "$orphan_workspace")
+            if [[ -n "$port" ]]; then
+                workspace="$orphan_workspace"
+                debug "Using orphan workspace: $workspace on port $port"
+            fi
+        fi
     fi
 
     # Step 4: Try to send request to extension
@@ -307,7 +477,6 @@ main() {
             local response
             response=$(send_open_request "$port" "$abs_path" "$LINE" "$ZEN" "$RAW")
             if [[ $? -eq 0 ]]; then
-                # Parse response and show friendly message
                 local success
                 success=$(echo "$response" | jq -r '.success // false')
                 if [[ "$success" == "true" ]]; then
@@ -315,11 +484,10 @@ main() {
                     filename=$(basename "$abs_path")
                     echo "Opened: $filename"
 
-                    # Bring VS Code window to foreground by re-invoking code
-                    # This works because VS Code won't reload if folder is already open
+                    # Bring VS Code window to foreground
                     # Skip for temp directories (test environment) or if VO_NO_FOCUS is set
-                    if [[ -z "${VO_NO_FOCUS:-}" && "$git_root" != /tmp/* ]]; then
-                        code "$git_root" >/dev/null 2>&1 &
+                    if [[ -z "${VO_NO_FOCUS:-}" && "$workspace" != /tmp/* ]]; then
+                        code "$workspace" >/dev/null 2>&1 &
                     fi
                     exit 0
                 else
@@ -344,22 +512,41 @@ main() {
 #-------------------------------------------------------------------------------
 
 list_files() {
-    # Detect git root from current directory
+    local cwd
+    cwd=$(pwd)
+    local port=""
+
+    # Try git root first
     local git_root
-    git_root=$(detect_git_root "$(pwd)")
+    git_root=$(detect_git_root "$cwd")
     debug "Git root: ${git_root:-<none>}"
 
-    if [[ -z "$git_root" ]]; then
-        echo "Error: Not in a git repository" >&2
-        exit 1
+    if [[ -n "$git_root" ]]; then
+        port=$(find_matching_port "$git_root")
     fi
 
-    # Find matching VS Code window
-    local port
-    port=$(find_matching_port "$git_root")
+    # Try path-based fallback
+    if [[ -z "$port" ]]; then
+        local parent_result
+        parent_result=$(find_parent_workspace "$cwd")
+        if [[ -n "$parent_result" ]]; then
+            port="${parent_result##*:}"
+            debug "Using parent workspace port: $port"
+        fi
+    fi
+
+    # Try orphan workspace
+    if [[ -z "$port" ]]; then
+        local orphan_workspace
+        orphan_workspace=$(get_config_value "orphanWorkspace")
+        if [[ -n "$orphan_workspace" ]]; then
+            port=$(find_matching_port "$orphan_workspace")
+            debug "Using orphan workspace port: $port"
+        fi
+    fi
 
     if [[ -z "$port" ]]; then
-        echo "Error: No VS Code window found for this project" >&2
+        echo "Error: No VS Code window found for this location" >&2
         exit 1
     fi
 
