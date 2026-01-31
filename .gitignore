@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+
+# Build output
+out/
+*.vsix
+
+# OS files
+.DS_Store
+
+# Editor
+.vscode/
+!.vscode/extensions.json

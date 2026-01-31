@@ -1,0 +1,390 @@
+#!/usr/bin/env bash
+#===============================================================================
+# vo - Context-Aware VS Code File Opener
+#
+# Opens files in the VS Code window that has the matching project open,
+# determined by git repository root.
+#
+# Usage:
+#   vo <file>           Open file in matching VS Code window
+#   vo <file>:123       Open file at line 123
+#   vo -z <file>        Open in zen mode (hide sidebar/panels)
+#   vo --raw <file>     Use VS Code's default editor (bypass custom mappings)
+#
+# How it works:
+#   1. Resolves file to absolute path
+#   2. Detects git root of the file's directory
+#   3. Reads registry (~/.config/vo/registry.json) to find VS Code window
+#      with matching workspace
+#   4. Sends HTTP request to that window's vo-server extension
+#   5. Falls back to `code` command if no match or extension unreachable
+#
+# Dependencies: jq, curl, git, realpath (coreutils)
+#===============================================================================
+
+set -euo pipefail
+
+#-------------------------------------------------------------------------------
+# Configuration
+#-------------------------------------------------------------------------------
+
+REGISTRY_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/vo"
+REGISTRY_FILE="$REGISTRY_DIR/registry.json"
+HEALTH_TIMEOUT=0.5  # seconds to wait for health check
+REQUEST_TIMEOUT=2   # seconds to wait for open request
+
+#-------------------------------------------------------------------------------
+# Usage
+#-------------------------------------------------------------------------------
+
+usage() {
+    cat <<EOF
+Usage: vo [OPTIONS] <file>[:<line>]
+       vo -l
+
+Open a file in the VS Code window that has the matching project open.
+
+Options:
+  -l, --list    List all open files in the current project's VS Code window
+  -z, --zen     Zen mode: hide Explorer sidebar and panels
+  --raw         Use VS Code's default editor (bypass custom editor mappings)
+  -h, --help    Show this help message
+
+Examples:
+  vo src/main.py          Open file in correct project window
+  vo src/main.py:42       Open at line 42
+  vo -z README.md         Open in zen mode
+  vo --raw doc.md         Open markdown with default editor, not Mark Sharp
+  vo -l                   List all open files
+
+If no matching VS Code window is found, falls back to opening a new window.
+EOF
+}
+
+#-------------------------------------------------------------------------------
+# Logging (only in debug mode)
+#-------------------------------------------------------------------------------
+
+debug() {
+    if [[ "${VO_DEBUG:-}" == "1" ]]; then
+        echo "[vo] $*" >&2
+    fi
+}
+
+#-------------------------------------------------------------------------------
+# Argument Parsing
+#-------------------------------------------------------------------------------
+
+ZEN=false
+RAW=false
+LIST=false
+FILE=""
+LINE=""
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -l|--list)
+                LIST=true
+                shift
+                ;;
+            -z|--zen)
+                ZEN=true
+                shift
+                ;;
+            --raw)
+                RAW=true
+                shift
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            -*)
+                echo "Error: Unknown option $1" >&2
+                usage >&2
+                exit 1
+                ;;
+            *)
+                # Parse file:line format
+                # Handle edge case: Windows paths with colons (C:\...) - not relevant for our use
+                # Handle edge case: File with colon in name - use last colon followed by digits only
+                if [[ "$1" =~ ^(.+):([0-9]+)$ ]]; then
+                    FILE="${BASH_REMATCH[1]}"
+                    LINE="${BASH_REMATCH[2]}"
+                else
+                    FILE="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+}
+
+#-------------------------------------------------------------------------------
+# Core Logic
+#-------------------------------------------------------------------------------
+
+resolve_absolute_path() {
+    local file="$1"
+
+    # realpath resolves symlinks and makes path absolute
+    # Use -m to not require file to exist (for creating new files)
+    local resolved
+    if ! resolved=$(realpath -m "$file" 2>/dev/null); then
+        # Fallback for systems without -m flag
+        resolved=$(realpath "$file" 2>/dev/null || echo "$file")
+    fi
+
+    # If file doesn't exist, try case-insensitive match
+    if [[ ! -e "$resolved" ]]; then
+        local dir basename match
+        dir=$(dirname "$resolved")
+        basename=$(basename "$resolved")
+
+        if [[ -d "$dir" ]]; then
+            # Find case-insensitive match in directory
+            match=$(find "$dir" -maxdepth 1 -iname "$basename" -print -quit 2>/dev/null)
+            if [[ -n "$match" ]]; then
+                debug "Case-insensitive match: $basename -> $(basename "$match")"
+                resolved="$match"
+            fi
+        fi
+    fi
+
+    echo "$resolved"
+}
+
+detect_git_root() {
+    local file_dir="$1"
+
+    # Get the directory containing the file
+    if [[ -d "$file_dir" ]]; then
+        local dir="$file_dir"
+    else
+        local dir
+        dir=$(dirname "$file_dir")
+    fi
+
+    # Find git root
+    git -C "$dir" rev-parse --show-toplevel 2>/dev/null || echo ""
+}
+
+find_matching_port() {
+    local workspace="$1"
+
+    if [[ ! -f "$REGISTRY_FILE" ]]; then
+        debug "No registry file at $REGISTRY_FILE"
+        echo ""
+        return
+    fi
+
+    # Find window(s) matching workspace, pick most recently active
+    local port
+    port=$(jq -r --arg ws "$workspace" '
+        .windows // []
+        | map(select(.workspace == $ws))
+        | sort_by(-.lastActive)
+        | .[0].port // empty
+    ' "$REGISTRY_FILE" 2>/dev/null || echo "")
+
+    debug "Found port $port for workspace $workspace"
+    echo "$port"
+}
+
+check_server_health() {
+    local port="$1"
+
+    curl -s --max-time "$HEALTH_TIMEOUT" "http://127.0.0.1:$port/health" >/dev/null 2>&1
+}
+
+send_open_request() {
+    local port="$1"
+    local file="$2"
+    local line="$3"
+    local zen="$4"
+    local raw="$5"
+
+    # Build JSON payload
+    local payload
+    if [[ -n "$line" ]]; then
+        payload=$(jq -n \
+            --arg file "$file" \
+            --argjson line "$line" \
+            --argjson zen "$zen" \
+            --argjson raw "$raw" \
+            '{file: $file, line: $line, zen: $zen, raw: $raw}')
+    else
+        payload=$(jq -n \
+            --arg file "$file" \
+            --argjson zen "$zen" \
+            --argjson raw "$raw" \
+            '{file: $file, zen: $zen, raw: $raw}')
+    fi
+
+    debug "Sending to port $port: $payload"
+
+    curl -s --max-time "$REQUEST_TIMEOUT" \
+        -X POST "http://127.0.0.1:$port/open" \
+        -H "Content-Type: application/json" \
+        -d "$payload"
+}
+
+send_files_request() {
+    local port="$1"
+
+    debug "Requesting file list from port $port"
+
+    curl -s --max-time "$REQUEST_TIMEOUT" \
+        -X GET "http://127.0.0.1:$port/files"
+}
+
+fallback_to_code() {
+    local file="$1"
+    local git_root="$2"
+
+    debug "Falling back to code command"
+
+    # Dry-run mode for testing - don't actually launch VS Code
+    if [[ "${VO_DRY_RUN:-}" == "1" ]]; then
+        if [[ -n "$git_root" ]]; then
+            echo "[dry-run] code $git_root $file"
+        else
+            echo "[dry-run] code $file"
+        fi
+        return 0
+    fi
+
+    # Open with project context if we have git root
+    if [[ -n "$git_root" ]]; then
+        code "$git_root" "$file"
+    else
+        code "$file"
+    fi
+}
+
+#-------------------------------------------------------------------------------
+# Main
+#-------------------------------------------------------------------------------
+
+main() {
+    parse_args "$@"
+
+    # Handle list mode
+    if [[ "$LIST" == "true" ]]; then
+        list_files
+        exit $?
+    fi
+
+    # Validate file argument
+    if [[ -z "$FILE" ]]; then
+        echo "Error: No file specified" >&2
+        echo "" >&2
+        usage >&2
+        exit 1
+    fi
+
+    # Step 1: Resolve to absolute path
+    local abs_path
+    abs_path=$(resolve_absolute_path "$FILE")
+    debug "Resolved path: $abs_path"
+
+    # Step 2: Detect git root
+    local git_root
+    git_root=$(detect_git_root "$abs_path")
+    debug "Git root: ${git_root:-<none>}"
+
+    # Step 3: Find matching VS Code window
+    local port=""
+    if [[ -n "$git_root" ]]; then
+        port=$(find_matching_port "$git_root")
+    fi
+
+    # Step 4: Try to send request to extension
+    if [[ -n "$port" ]]; then
+        if check_server_health "$port"; then
+            debug "Server healthy on port $port"
+            local response
+            response=$(send_open_request "$port" "$abs_path" "$LINE" "$ZEN" "$RAW")
+            if [[ $? -eq 0 ]]; then
+                # Parse response and show friendly message
+                local success
+                success=$(echo "$response" | jq -r '.success // false')
+                if [[ "$success" == "true" ]]; then
+                    local filename
+                    filename=$(basename "$abs_path")
+                    echo "Opened: $filename"
+
+                    # Bring VS Code window to foreground by re-invoking code
+                    # This works because VS Code won't reload if folder is already open
+                    # Skip for temp directories (test environment) or if VO_NO_FOCUS is set
+                    if [[ -z "${VO_NO_FOCUS:-}" && "$git_root" != /tmp/* ]]; then
+                        code "$git_root" >/dev/null 2>&1 &
+                    fi
+                    exit 0
+                else
+                    local error
+                    error=$(echo "$response" | jq -r '.error // "Unknown error"')
+                    echo "Error: $error" >&2
+                    exit 1
+                fi
+            fi
+            debug "Request failed"
+        else
+            debug "Server not responding on port $port"
+        fi
+    fi
+
+    # Step 5: Fallback to code command
+    fallback_to_code "$abs_path" "$git_root"
+}
+
+#-------------------------------------------------------------------------------
+# List Files Mode
+#-------------------------------------------------------------------------------
+
+list_files() {
+    # Detect git root from current directory
+    local git_root
+    git_root=$(detect_git_root "$(pwd)")
+    debug "Git root: ${git_root:-<none>}"
+
+    if [[ -z "$git_root" ]]; then
+        echo "Error: Not in a git repository" >&2
+        exit 1
+    fi
+
+    # Find matching VS Code window
+    local port
+    port=$(find_matching_port "$git_root")
+
+    if [[ -z "$port" ]]; then
+        echo "Error: No VS Code window found for this project" >&2
+        exit 1
+    fi
+
+    if ! check_server_health "$port"; then
+        echo "Error: VS Code extension not responding" >&2
+        exit 1
+    fi
+
+    debug "Server healthy on port $port"
+
+    local response
+    response=$(send_files_request "$port")
+
+    local success
+    success=$(echo "$response" | jq -r '.success // false')
+
+    if [[ "$success" != "true" ]]; then
+        local error
+        error=$(echo "$response" | jq -r '.error // "Unknown error"')
+        echo "Error: $error" >&2
+        exit 1
+    fi
+
+    # Print each file path on its own line
+    echo "$response" | jq -r '.files[]'
+}
+
+main "$@"
