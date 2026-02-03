@@ -1,7 +1,7 @@
 {
-  "name": "vo-server",
-  "displayName": "vo-server",
-  "description": "HTTP server for vo CLI - enables context-aware file opening",
+  "name": "flocus",
+  "displayName": "flocus",
+  "description": "Focus & Flow for VS Code - context-aware file opening",
   "version": "0.1.0",
   "publisher": "local",
   "license": "MIT",

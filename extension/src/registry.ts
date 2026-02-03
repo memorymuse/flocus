@@ -1,7 +1,7 @@
 /**
- * Registry management for vo-server extension.
+ * Registry management for flocus extension.
  *
- * The registry is a JSON file at ~/.config/vo/registry.json that tracks
+ * The registry is a JSON file at ~/.config/flocus/registry.json that tracks
  * which VS Code windows are running, their workspace paths, and the ports
  * they're listening on.
  *
@@ -32,11 +32,11 @@ export interface Registry {
 
 /**
  * Get the path to the registry file.
- * Uses XDG_CONFIG_HOME if set, otherwise ~/.config/vo/registry.json
+ * Uses XDG_CONFIG_HOME if set, otherwise ~/.config/flocus/registry.json
  */
 export function getRegistryPath(): string {
     const configHome = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
-    return path.join(configHome, 'vo', 'registry.json');
+    return path.join(configHome, 'flocus', 'registry.json');
 }
 
 /**
@@ -53,7 +53,7 @@ export function readRegistry(): Registry {
         const registry = JSON.parse(content) as Registry;
         return registry;
     } catch (error) {
-        console.error(`[vo-server] Failed to read registry: ${error}`);
+        console.error(`[flocus] Failed to read registry: ${error}`);
         return { version: 1, windows: [] };
     }
 }
@@ -100,7 +100,7 @@ export function registerWindow(entry: WindowEntry): void {
     registry.windows.push(entry);
 
     writeRegistry(registry);
-    console.log(`[vo-server] Registered: ${entry.workspace} on port ${entry.port}`);
+    console.log(`[flocus] Registered: ${entry.workspace} on port ${entry.port}`);
 }
 
 /**
@@ -118,7 +118,7 @@ export function unregisterWindow(workspace: string, port: number): void {
 
     if (before !== after) {
         writeRegistry(registry);
-        console.log(`[vo-server] Unregistered: ${workspace} on port ${port}`);
+        console.log(`[flocus] Unregistered: ${workspace} on port ${port}`);
     }
 }
 

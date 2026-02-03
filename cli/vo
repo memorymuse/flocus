@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
 #===============================================================================
-# vo - Context-Aware VS Code File Opener
+# flocus - Focus & Flow for VS Code
 #
 # Opens files in the VS Code window that has the matching project open,
-# determined by git repository root.
+# determined by git repository root. Part of the flocus suite for managing
+# developer focus and reducing cognitive overhead.
 #
 # Usage:
-#   vo <file>           Open file in matching VS Code window
-#   vo <file>:123       Open file at line 123
-#   vo -z <file>        Open in zen mode (hide sidebar/panels)
-#   vo --raw <file>     Use VS Code's default editor (bypass custom mappings)
+#   flocus open <file>        Open file in matching VS Code window
+#   flocus open <file>:123    Open file at line 123
+#   flocus open -z <file>     Open in zen mode (hide sidebar/panels)
+#   flocus list               List open files in current project
 #
 # How it works:
 #   1. Resolves file to absolute path
 #   2. Detects git root of the file's directory
-#   3. Reads registry (~/.config/vo/registry.json) to find VS Code window
+#   3. Reads registry (~/.config/flocus/registry.json) to find VS Code window
 #      with matching workspace
-#   4. Sends HTTP request to that window's vo-server extension
+#   4. Sends HTTP request to that window's flocus extension
 #   5. Falls back to `code` command if no match or extension unreachable
 #
 # Dependencies: jq, curl, git, realpath (coreutils)
@@ -28,7 +29,7 @@ set -euo pipefail
 # Configuration
 #-------------------------------------------------------------------------------
 
-REGISTRY_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/vo"
+REGISTRY_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/flocus"
 REGISTRY_FILE="$REGISTRY_DIR/registry.json"
 CONFIG_FILE="$REGISTRY_DIR/config.json"
 HEALTH_TIMEOUT=0.5  # seconds to wait for health check
@@ -59,36 +60,39 @@ get_config_value() {
 
 usage() {
     cat <<EOF
-Usage: vo [OPTIONS] <file>[:<line>]
-       vo [OPTIONS] <directory>
-       vo -l
+Usage: flocus open [OPTIONS] <file>[:<line>]
+       flocus open [OPTIONS] <directory>
+       flocus list
 
 Open a file or directory in the correct VS Code window.
 
-Options:
-  -l, --list    List all open files in the current project's VS Code window
+Commands:
+  open          Open a file or directory
+  list          List all open files in the current project's VS Code window
+
+Options (for 'open'):
   -z, --zen     Zen mode: hide Explorer sidebar and panels
   --raw         Use VS Code's default editor (bypass custom editor mappings)
   --all         Open all files in directory (NOT YET IMPLEMENTED)
-  --agent       Show context for AI agents
   -h, --help    Show this help message
+  --agent       Show context for AI agents
 
 Examples:
-  vo src/main.py          Open file in correct project window
-  vo src/main.py:42       Open at line 42
-  vo ~/projects/myapp     Open directory (registers for future vo calls)
-  vo src/ --all           Open all files in src/ (NOT YET IMPLEMENTED)
-  vo -z README.md         Open in zen mode
-  vo --raw doc.md         Open markdown with default editor, not Mark Sharp
-  vo -l                   List all open files
+  flocus open src/main.py          Open file in correct project window
+  flocus open src/main.py:42       Open at line 42
+  flocus open ~/projects/myapp     Open directory (registers for future calls)
+  flocus open src/ --all           Open all files in src/ (NOT YET IMPLEMENTED)
+  flocus open -z README.md         Open in zen mode
+  flocus open --raw doc.md         Open markdown with default editor
+  flocus list                      List all open files
 
 Matching priority:
   1. Git repository root (if file is in a git repo)
   2. Parent workspace (if file is under an open VS Code folder)
-  3. Orphan workspace (if configured in ~/.config/vo/config.json)
+  3. Orphan workspace (if configured in ~/.config/flocus/config.json)
   4. Falls back to 'code' command
 
-Config (~/.config/vo/config.json):
+Config (~/.config/flocus/config.json):
   {
     "orphanWorkspace": "/path/to/default/workspace"
   }
@@ -97,32 +101,32 @@ EOF
 
 agent_context() {
     cat <<EOF
-vo - Context for AI Agents
-==========================
+flocus - Context for AI Agents
+==============================
 
-vo opens files in the *correct* VS Code window when multiple are open.
+flocus opens files in the *correct* VS Code window when multiple are open.
 
 Key insight:
-  - code ~/projects/myapp/src/main.py  →  opens in random/new window
-  - vo ~/projects/myapp/src/main.py    →  opens in the window with myapp open
+  - code ~/projects/myapp/src/main.py     →  opens in random/new window
+  - flocus open ~/projects/myapp/src/main.py  →  opens in the window with myapp open
 
 Setup: Open the project folder in VS Code first. This registers it.
-Then vo routes files there automatically. For one-off files outside
+Then flocus routes files there automatically. For one-off files outside
 any project, the default orphan workspace works fine.
 
-Match priority (automatic — just run 'vo <file>'):
-  1. Git root      — file in a git repo → window with that repo open
+Match priority (automatic — just run 'flocus open <file>'):
+  1. Git root         — file in a git repo → window with that repo open
   2. Parent workspace — file under any open VS Code folder
-  3. Default orphan workspace — configured in ~/.config/vo/config.json
-  4. Fallback      — runs 'code' command (opens in last focused window)
+  3. Default orphan workspace — configured in ~/.config/flocus/config.json
+  4. Fallback         — runs 'code' command (opens in last focused window)
 
 Common patterns:
-  vo <file>        Open in correct window
-  vo <dir>         Open/focus folder (seeds registry for future vo calls)
-  vo -l            List open tabs
-  vo -z <file>     Zen mode (hide sidebar/panels)
+  flocus open <file>       Open in correct window
+  flocus open <dir>        Open/focus folder (seeds registry for future calls)
+  flocus list              List open tabs
+  flocus open -z <file>    Zen mode (hide sidebar/panels)
 
-Refer to 'vo -h' for full option details.
+Refer to 'flocus --help' for full option details.
 EOF
 }
 
@@ -131,8 +135,8 @@ EOF
 #-------------------------------------------------------------------------------
 
 debug() {
-    if [[ "${VO_DEBUG:-}" == "1" ]]; then
-        echo "[vo] $*" >&2
+    if [[ "${FLOCUS_DEBUG:-}" == "1" ]]; then
+        echo "[flocus] $*" >&2
     fi
 }
 
@@ -341,7 +345,7 @@ fallback_to_code() {
     debug "Falling back to code command"
 
     # Dry-run mode for testing - don't actually launch VS Code
-    if [[ "${VO_DRY_RUN:-}" == "1" ]]; then
+    if [[ "${FLOCUS_DRY_RUN:-}" == "1" ]]; then
         if [[ -n "$git_root" ]]; then
             echo "[dry-run] code $git_root $file"
         else
@@ -409,7 +413,7 @@ open_directory() {
     if [[ -n "$port" ]] && check_server_health "$port"; then
         debug "Directory already open, focusing window"
         # Just focus the window - no file to open
-        if [[ "${VO_DRY_RUN:-}" == "1" ]]; then
+        if [[ "${FLOCUS_DRY_RUN:-}" == "1" ]]; then
             echo "[dry-run] code $dir_path"
         else
             code "$dir_path"
@@ -417,7 +421,7 @@ open_directory() {
         fi
     else
         # Open the directory in a new VS Code window
-        if [[ "${VO_DRY_RUN:-}" == "1" ]]; then
+        if [[ "${FLOCUS_DRY_RUN:-}" == "1" ]]; then
             echo "[dry-run] code $dir_path"
         else
             code "$dir_path"
@@ -485,8 +489,8 @@ open_file() {
                     echo "Opened: $filename"
 
                     # Bring VS Code window to foreground
-                    # Skip for temp directories (test environment) or if VO_NO_FOCUS is set
-                    if [[ -z "${VO_NO_FOCUS:-}" && "$workspace" != /tmp/* ]]; then
+                    # Skip for temp directories (test environment) or if FLOCUS_NO_FOCUS is set
+                    if [[ -z "${FLOCUS_NO_FOCUS:-}" && "$workspace" != /tmp/* ]]; then
                         code "$workspace" >/dev/null 2>&1 &
                     fi
                     exit 0

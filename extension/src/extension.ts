@@ -1,10 +1,10 @@
 /**
- * vo-server VS Code Extension
+ * flocus VS Code Extension
  *
- * This extension enables the vo CLI to open files in the correct VS Code window.
+ * This extension enables the flocus CLI to open files in the correct VS Code window.
  *
  * On activation:
- * 1. Registers the workspace in ~/.config/vo/registry.json
+ * 1. Registers the workspace in ~/.config/flocus/registry.json
  * 2. Starts an HTTP server on localhost to receive open requests
  * 3. Handles incoming requests to open files, reveal in explorer, etc.
  *
@@ -33,17 +33,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Get workspace root
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders || workspaceFolders.length === 0) {
-        console.log('[vo-server] No workspace folder open, extension inactive');
+        console.log('[flocus] No workspace folder open, extension inactive');
         return;
     }
 
     workspaceRoot = workspaceFolders[0].uri.fsPath;
-    console.log(`[vo-server] Activating for workspace: ${workspaceRoot}`);
+    console.log(`[flocus] Activating for workspace: ${workspaceRoot}`);
 
     try {
         // Find available port
         serverPort = await findAvailablePort(PORT_RANGE_START, PORT_RANGE_END);
-        console.log(`[vo-server] Using port ${serverPort}`);
+        console.log(`[flocus] Using port ${serverPort}`);
 
         // Start HTTP server
         server = createServer(serverPort, {
@@ -75,11 +75,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             }
         });
 
-        console.log('[vo-server] Extension activated successfully');
+        console.log('[flocus] Extension activated successfully');
 
     } catch (error) {
-        console.error('[vo-server] Failed to activate:', error);
-        vscode.window.showErrorMessage(`vo-server: Failed to start - ${error}`);
+        console.error('[flocus] Failed to activate:', error);
+        vscode.window.showErrorMessage(`flocus: Failed to start - ${error}`);
     }
 }
 
@@ -90,7 +90,7 @@ export function deactivate(): void {
 function cleanup(): void {
     if (server) {
         server.close();
-        console.log('[vo-server] HTTP server stopped');
+        console.log('[flocus] HTTP server stopped');
     }
 
     if (workspaceRoot && serverPort) {
@@ -123,7 +123,7 @@ function findOpenTab(fsPath: string): { tab: vscode.Tab; group: vscode.TabGroup 
  * Handle a request to list all open files.
  */
 async function handleFilesRequest(): Promise<FilesResponse> {
-    console.log('[vo-server] Files request');
+    console.log('[flocus] Files request');
 
     try {
         const files: string[] = [];
@@ -137,12 +137,12 @@ async function handleFilesRequest(): Promise<FilesResponse> {
             }
         }
 
-        console.log(`[vo-server] Found ${files.length} open files`);
+        console.log(`[flocus] Found ${files.length} open files`);
         return { success: true, files };
 
     } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
-        console.error(`[vo-server] Failed to list files: ${message}`);
+        console.error(`[flocus] Failed to list files: ${message}`);
         return { success: false, error: message };
     }
 }
@@ -151,7 +151,7 @@ async function handleFilesRequest(): Promise<FilesResponse> {
  * Handle an open file request from the CLI.
  */
 async function handleOpenRequest(request: OpenRequest): Promise<OpenResponse> {
-    console.log(`[vo-server] Open request: ${JSON.stringify(request)}`);
+    console.log(`[flocus] Open request: ${JSON.stringify(request)}`);
 
     try {
         const uri = vscode.Uri.file(request.file);
@@ -224,12 +224,12 @@ async function handleOpenRequest(request: OpenRequest): Promise<OpenResponse> {
         // Focus the editor
         await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
 
-        console.log(`[vo-server] Opened: ${request.file}`);
+        console.log(`[flocus] Opened: ${request.file}`);
         return { success: true, editor: editorId };
 
     } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
-        console.error(`[vo-server] Failed to open file: ${message}`);
+        console.error(`[flocus] Failed to open file: ${message}`);
         return { success: false, error: message };
     }
 }
@@ -242,7 +242,7 @@ async function applyZenMode(): Promise<void> {
         await vscode.commands.executeCommand('workbench.action.closeSidebar');
         await vscode.commands.executeCommand('workbench.action.closePanel');
     } catch (error) {
-        console.warn('[vo-server] Failed to apply zen mode:', error);
+        console.warn('[flocus] Failed to apply zen mode:', error);
     }
 }
 
@@ -256,6 +256,6 @@ function getCustomEditor(ext: string): string | undefined {
         '.md': 'msharp.customEditor'
     };
 
-    // TODO: Read from ~/.config/vo/config.json for user customization
+    // TODO: Read from ~/.config/flocus/config.json for user customization
     return defaultEditors[ext];
 }

@@ -14,7 +14,7 @@ let testDir: string;
 let originalXdgConfigHome: string | undefined;
 
 before(() => {
-    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vo-test-'));
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flocus-test-'));
     originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
     process.env.XDG_CONFIG_HOME = testDir;
 });
@@ -33,7 +33,7 @@ after(() => {
 
 beforeEach(() => {
     // Clean up registry between tests
-    const registryPath = path.join(testDir, 'vo', 'registry.json');
+    const registryPath = path.join(testDir, 'flocus', 'registry.json');
     if (fs.existsSync(registryPath)) {
         fs.unlinkSync(registryPath);
     }
@@ -53,7 +53,7 @@ describe('registry', () => {
     describe('getRegistryPath', () => {
         it('should return path under XDG_CONFIG_HOME', () => {
             const registryPath = getRegistryPath();
-            assert.strictEqual(registryPath, path.join(testDir, 'vo', 'registry.json'));
+            assert.strictEqual(registryPath, path.join(testDir, 'flocus', 'registry.json'));
         });
     });
 

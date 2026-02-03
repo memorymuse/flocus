@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Integration tests for vo CLI
+# Integration tests for flocus CLI
 # These are REAL tests - no mocks. They create actual files, git repos, and HTTP servers.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-VO_CLI="$PROJECT_ROOT/cli/vo"
+FLOCUS_CLI="$PROJECT_ROOT/cli/vo"  # Still using vo as alias for now
 
 # Test state
 TEST_TMPDIR=""
@@ -37,7 +37,7 @@ cleanup_stale_processes() {
 setup() {
     TEST_TMPDIR=$(mktemp -d)
     export XDG_CONFIG_HOME="$TEST_TMPDIR/.config"
-    mkdir -p "$XDG_CONFIG_HOME/vo"
+    mkdir -p "$XDG_CONFIG_HOME/flocus"
     SERVER_PIDS=()
 }
 
@@ -170,12 +170,12 @@ start_test_server() {
 #-------------------------------------------------------------------------------
 
 test_cli_exists_and_executable() {
-    [[ -x "$VO_CLI" ]] || return 1
+    [[ -x "$FLOCUS_CLI" ]] || return 1
 }
 
 test_requires_file_argument() {
     local output
-    output=$("$VO_CLI" 2>&1 || true)
+    output=$("$FLOCUS_CLI" 2>&1 || true)
     assert_contains "$output" "Usage" "Should show usage when no file given"
 }
 
@@ -200,10 +200,10 @@ test_resolves_relative_path() {
             "pid": 99999,
             "lastActive": 1737561234567
         }]
-    }' > "$XDG_CONFIG_HOME/vo/registry.json"
+    }' > "$XDG_CONFIG_HOME/flocus/registry.json"
 
     # Run vo from within the repo, using relative path
-    (cd "$repo" && "$VO_CLI" src/module.py)
+    (cd "$repo" && "$FLOCUS_CLI" src/module.py)
 
     # Verify the request contained absolute path
     local request
@@ -232,10 +232,10 @@ test_detects_git_root() {
             "pid": 99999,
             "lastActive": 1737561234567
         }]
-    }' > "$XDG_CONFIG_HOME/vo/registry.json"
+    }' > "$XDG_CONFIG_HOME/flocus/registry.json"
 
     # Run from nested directory
-    (cd "$repo/deep/nested" && "$VO_CLI" file.py)
+    (cd "$repo/deep/nested" && "$FLOCUS_CLI" file.py)
 
     # Server should have received the request (meaning git root was detected correctly)
     [[ -f "$log_file" ]] || return 1
@@ -258,9 +258,9 @@ test_sends_correct_json_payload() {
             "pid": 99999,
             "lastActive": 1737561234567
         }]
-    }' > "$XDG_CONFIG_HOME/vo/registry.json"
+    }' > "$XDG_CONFIG_HOME/flocus/registry.json"
 
-    "$VO_CLI" "$repo/test.py"
+    "$FLOCUS_CLI" "$repo/test.py"
 
     # Verify JSON structure
     local request
@@ -289,9 +289,9 @@ test_zen_flag() {
             "pid": 99999,
             "lastActive": 1737561234567
         }]
-    }' > "$XDG_CONFIG_HOME/vo/registry.json"
+    }' > "$XDG_CONFIG_HOME/flocus/registry.json"
 
-    "$VO_CLI" -z "$repo/test.py"
+    "$FLOCUS_CLI" -z "$repo/test.py"
 
     local request
     request=$(cat "$log_file")
@@ -315,9 +315,9 @@ test_line_number_parsing() {
             "pid": 99999,
             "lastActive": 1737561234567
         }]
-    }' > "$XDG_CONFIG_HOME/vo/registry.json"
+    }' > "$XDG_CONFIG_HOME/flocus/registry.json"
 
-    "$VO_CLI" "$repo/test.py:42"
+    "$FLOCUS_CLI" "$repo/test.py:42"
 
     local request
     request=$(cat "$log_file")
@@ -355,9 +355,9 @@ test_picks_most_recent_window() {
                 "lastActive": 2000
             }
         ]
-    }' > "$XDG_CONFIG_HOME/vo/registry.json"
+    }' > "$XDG_CONFIG_HOME/flocus/registry.json"
 
-    "$VO_CLI" "$repo/test.py"
+    "$FLOCUS_CLI" "$repo/test.py"
 
     # Only the newer window should have received the request
     [[ ! -f "$old_log" ]] || return 1
@@ -371,11 +371,11 @@ test_fallback_when_no_registry() {
     echo "code" > "$repo/test.py"
 
     # Remove registry if it exists
-    rm -f "$XDG_CONFIG_HOME/vo/registry.json"
+    rm -f "$XDG_CONFIG_HOME/flocus/registry.json"
 
     # Use dry-run mode to avoid actually launching VS Code
     local output
-    output=$(VO_DRY_RUN=1 "$VO_CLI" "$repo/test.py" 2>&1)
+    output=$(FLOCUS_DRY_RUN=1 "$FLOCUS_CLI" "$repo/test.py" 2>&1)
 
     # Should indicate it would call code command
     assert_contains "$output" "[dry-run] code" "Should fall back to code command"
@@ -395,11 +395,11 @@ test_fallback_when_server_dead() {
             "pid": 99999,
             "lastActive": 1737561234567
         }]
-    }' > "$XDG_CONFIG_HOME/vo/registry.json"
+    }' > "$XDG_CONFIG_HOME/flocus/registry.json"
 
     # Use dry-run mode to avoid actually launching VS Code
     local output
-    output=$(VO_DRY_RUN=1 "$VO_CLI" "$repo/test.py" 2>&1)
+    output=$(FLOCUS_DRY_RUN=1 "$FLOCUS_CLI" "$repo/test.py" 2>&1)
 
     # Should fall back to code command when server is unreachable
     assert_contains "$output" "[dry-run] code" "Should fall back to code command"
@@ -424,11 +424,11 @@ test_list_open_files() {
             "pid": 99999,
             "lastActive": 1737561234567
         }]
-    }' > "$XDG_CONFIG_HOME/vo/registry.json"
+    }' > "$XDG_CONFIG_HOME/flocus/registry.json"
 
     # Run from within the repo
     local output
-    output=$(cd "$repo" && "$VO_CLI" --list)
+    output=$(cd "$repo" && "$FLOCUS_CLI" --list)
 
     # Should output all three files
     assert_contains "$output" "/project/src/main.ts" "Should list main.ts" || return 1
@@ -442,10 +442,10 @@ test_list_no_matching_window() {
     mkdir -p "$dir"
 
     # Empty registry
-    echo '{"version": 1, "windows": []}' > "$XDG_CONFIG_HOME/vo/registry.json"
+    echo '{"version": 1, "windows": []}' > "$XDG_CONFIG_HOME/flocus/registry.json"
 
     local output
-    output=$(cd "$dir" && "$VO_CLI" --list 2>&1 || true)
+    output=$(cd "$dir" && "$FLOCUS_CLI" --list 2>&1 || true)
 
     assert_contains "$output" "No VS Code window found" "Should error when no matching window"
 }
@@ -455,10 +455,10 @@ test_list_requires_vscode_window() {
     create_git_repo "$repo"
 
     # Empty registry (no windows)
-    echo '{"version": 1, "windows": []}' > "$XDG_CONFIG_HOME/vo/registry.json"
+    echo '{"version": 1, "windows": []}' > "$XDG_CONFIG_HOME/flocus/registry.json"
 
     local output
-    output=$(cd "$repo" && "$VO_CLI" --list 2>&1 || true)
+    output=$(cd "$repo" && "$FLOCUS_CLI" --list 2>&1 || true)
 
     assert_contains "$output" "No VS Code window found" "Should error when no window found"
 }
@@ -468,7 +468,7 @@ test_open_directory() {
     mkdir -p "$dir"
 
     local output
-    output=$(VO_DRY_RUN=1 "$VO_CLI" "$dir" 2>&1)
+    output=$(FLOCUS_DRY_RUN=1 "$FLOCUS_CLI" "$dir" 2>&1)
 
     assert_contains "$output" "[dry-run] code $dir" "Should open directory with code command"
 }
@@ -493,10 +493,10 @@ test_path_based_fallback() {
             "pid": 99999,
             "lastActive": 1737561234567
         }]
-    }' > "$XDG_CONFIG_HOME/vo/registry.json"
+    }' > "$XDG_CONFIG_HOME/flocus/registry.json"
 
     # Open a file under the workspace
-    "$VO_CLI" "$workspace/subdir/file.txt"
+    "$FLOCUS_CLI" "$workspace/subdir/file.txt"
 
     # Should have received the request
     [[ -f "$log_file" ]] || return 1
@@ -527,15 +527,15 @@ test_orphan_workspace_config() {
             "pid": 99999,
             "lastActive": 1737561234567
         }]
-    }' > "$XDG_CONFIG_HOME/vo/registry.json"
+    }' > "$XDG_CONFIG_HOME/flocus/registry.json"
 
     # Configure orphan workspace
     echo '{
         "orphanWorkspace": "'"$orphan_workspace"'"
-    }' > "$XDG_CONFIG_HOME/vo/config.json"
+    }' > "$XDG_CONFIG_HOME/flocus/config.json"
 
     # Open the orphan file
-    "$VO_CLI" "$orphan_dir/file.txt"
+    "$FLOCUS_CLI" "$orphan_dir/file.txt"
 
     # Should have been sent to orphan workspace
     [[ -f "$log_file" ]] || return 1
@@ -550,7 +550,7 @@ test_orphan_workspace_config() {
 
 main() {
     echo ""
-    echo "vo CLI Integration Tests"
+    echo "flocus CLI Integration Tests"
     echo "========================"
     echo ""
 
@@ -566,8 +566,8 @@ main() {
     done
 
     # Check CLI exists
-    if [[ ! -f "$VO_CLI" ]]; then
-        echo -e "${YELLOW}SKIP${NC}: CLI not yet implemented at $VO_CLI"
+    if [[ ! -f "$FLOCUS_CLI" ]]; then
+        echo -e "${YELLOW}SKIP${NC}: CLI not yet implemented at $FLOCUS_CLI"
         exit 0
     fi
 

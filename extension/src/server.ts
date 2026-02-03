@@ -1,5 +1,5 @@
 /**
- * HTTP server for vo-server extension.
+ * HTTP server for flocus extension.
  *
  * Handles incoming requests from the vo CLI.
  *
@@ -121,7 +121,7 @@ export function createServer(
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify(response));
             } catch (error) {
-                console.error('[vo-server] Error handling /files:', error);
+                console.error('[flocus] Error handling /files:', error);
                 res.writeHead(500, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({
                     success: false,
@@ -150,7 +150,7 @@ export function createServer(
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify(response));
             } catch (error) {
-                console.error('[vo-server] Error handling /open:', error);
+                console.error('[flocus] Error handling /open:', error);
                 res.writeHead(500, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({
                     success: false,
@@ -166,7 +166,7 @@ export function createServer(
     });
 
     server.listen(port, '127.0.0.1', () => {
-        console.log(`[vo-server] HTTP server listening on http://127.0.0.1:${port}`);
+        console.log(`[flocus] HTTP server listening on http://127.0.0.1:${port}`);
     });
 
     return server;
