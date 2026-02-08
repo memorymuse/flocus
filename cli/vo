@@ -297,6 +297,52 @@ check_server_health() {
     curl -s --max-time "$HEALTH_TIMEOUT" "http://127.0.0.1:$port/health" >/dev/null 2>&1
 }
 
+# Verify server is alive AND belongs to the expected workspace.
+# Returns 0 if healthy and workspace matches, 1 otherwise.
+verify_server() {
+    local port="$1"
+    local expected_workspace="$2"
+
+    local response
+    response=$(curl -s --max-time "$HEALTH_TIMEOUT" "http://127.0.0.1:$port/health" 2>/dev/null) || return 1
+
+    # Parse workspace from JSON response
+    local actual_workspace
+    actual_workspace=$(echo "$response" | jq -r '.workspace // empty' 2>/dev/null)
+
+    if [[ -z "$actual_workspace" ]]; then
+        # Legacy response (plain "ok") or missing workspace — treat as healthy
+        debug "Server on port $port returned health without workspace (legacy)"
+        return 0
+    fi
+
+    if [[ "$actual_workspace" != "$expected_workspace" ]]; then
+        debug "Workspace mismatch on port $port: expected=$expected_workspace actual=$actual_workspace"
+        return 1
+    fi
+
+    return 0
+}
+
+# Remove a stale registry entry for a given workspace+port combination
+prune_registry_entry() {
+    local workspace="$1"
+    local port="$2"
+
+    if [[ ! -f "$REGISTRY_FILE" ]]; then
+        return
+    fi
+
+    debug "Pruning stale entry: workspace=$workspace port=$port"
+
+    local updated
+    updated=$(jq --arg ws "$workspace" --argjson port "$port" '
+        .windows |= map(select(.workspace != $ws or .port != $port))
+    ' "$REGISTRY_FILE" 2>/dev/null) || return
+
+    echo "$updated" > "$REGISTRY_FILE"
+}
+
 send_open_request() {
     local port="$1"
     local file="$2"
@@ -410,7 +456,7 @@ open_directory() {
     local port
     port=$(find_matching_port "$dir_path")
 
-    if [[ -n "$port" ]] && check_server_health "$port"; then
+    if [[ -n "$port" ]] && verify_server "$port" "$dir_path"; then
         debug "Directory already open, focusing window"
         # Just focus the window - no file to open
         if [[ "${FLOCUS_DRY_RUN:-}" == "1" ]]; then
@@ -476,8 +522,8 @@ open_file() {
 
     # Step 4: Try to send request to extension
     if [[ -n "$port" ]]; then
-        if check_server_health "$port"; then
-            debug "Server healthy on port $port"
+        if verify_server "$port" "$workspace"; then
+            debug "Server verified on port $port for workspace $workspace"
             local response
             response=$(send_open_request "$port" "$abs_path" "$LINE" "$ZEN" "$RAW")
             if [[ $? -eq 0 ]]; then
@@ -503,7 +549,8 @@ open_file() {
             fi
             debug "Request failed"
         else
-            debug "Server not responding on port $port"
+            debug "Server not verified on port $port, pruning stale entry"
+            prune_registry_entry "$workspace" "$port"
         fi
     fi
 
@@ -519,6 +566,7 @@ list_files() {
     local cwd
     cwd=$(pwd)
     local port=""
+    local workspace=""
 
     # Try git root first
     local git_root
@@ -527,6 +575,7 @@ list_files() {
 
     if [[ -n "$git_root" ]]; then
         port=$(find_matching_port "$git_root")
+        workspace="$git_root"
     fi
 
     # Try path-based fallback
@@ -534,8 +583,9 @@ list_files() {
         local parent_result
         parent_result=$(find_parent_workspace "$cwd")
         if [[ -n "$parent_result" ]]; then
+            workspace="${parent_result%%:*}"
             port="${parent_result##*:}"
-            debug "Using parent workspace port: $port"
+            debug "Using parent workspace: $workspace on port $port"
         fi
     fi
 
@@ -545,7 +595,10 @@ list_files() {
         orphan_workspace=$(get_config_value "orphanWorkspace")
         if [[ -n "$orphan_workspace" ]]; then
             port=$(find_matching_port "$orphan_workspace")
-            debug "Using orphan workspace port: $port"
+            if [[ -n "$port" ]]; then
+                workspace="$orphan_workspace"
+                debug "Using orphan workspace: $workspace on port $port"
+            fi
         fi
     fi
 
@@ -554,12 +607,13 @@ list_files() {
         exit 1
     fi
 
-    if ! check_server_health "$port"; then
-        echo "Error: VS Code extension not responding" >&2
+    if ! verify_server "$port" "$workspace"; then
+        prune_registry_entry "$workspace" "$port"
+        echo "Error: VS Code extension not responding (stale entry cleaned)" >&2
         exit 1
     fi
 
-    debug "Server healthy on port $port"
+    debug "Server verified on port $port for workspace $workspace"
 
     local response
     response=$(send_files_request "$port")

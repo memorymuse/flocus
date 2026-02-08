@@ -131,6 +131,28 @@ describe('registry', () => {
             assert.strictEqual(registry.windows[0].lastActive, 2000);
         });
 
+        it('should remove stale entry with conflicting port from different workspace', () => {
+            registerWindow({
+                workspace: '/project1',
+                port: 19801,
+                pid: 1000,
+                lastActive: 1000
+            });
+
+            // New workspace takes the same port (previous window crashed)
+            registerWindow({
+                workspace: '/project2',
+                port: 19801,
+                pid: 1001,
+                lastActive: 2000
+            });
+
+            const registry = readRegistry();
+            assert.strictEqual(registry.windows.length, 1);
+            assert.strictEqual(registry.windows[0].workspace, '/project2');
+            assert.strictEqual(registry.windows[0].port, 19801);
+        });
+
         it('should allow multiple different workspaces', () => {
             registerWindow({
                 workspace: '/project1',

@@ -49,7 +49,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         server = createServer(serverPort, {
             onOpen: handleOpenRequest,
             onFiles: handleFilesRequest
-        });
+        }, workspaceRoot);
 
         // Register in registry
         registerWindow({

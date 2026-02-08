@@ -2,11 +2,12 @@
 """
 Simple HTTP test server for vo CLI integration tests.
 
-Usage: python3 test_server.py <log_file> [port] [files_json]
+Usage: python3 test_server.py <log_file> [port] [files_json] [workspace]
 
 If port is not specified, an available port is found automatically.
 The server writes received POST /open requests to log_file.
 If files_json is provided, GET /files returns that JSON array.
+If workspace is provided, GET /health includes it in the JSON response.
 Prints the port number to stdout on startup.
 """
 
@@ -23,7 +24,7 @@ def find_available_port():
         return s.getsockname()[1]
 
 
-def create_handler(log_file: str, files_list: list | None = None):
+def create_handler(log_file: str, files_list: list | None = None, workspace_path: str | None = None):
     """Create a request handler that logs to the specified file."""
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -33,8 +34,10 @@ def create_handler(log_file: str, files_list: list | None = None):
         def do_GET(self):
             if self.path == '/health':
                 self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(b'ok')
+                response = {'status': 'ok', 'workspace': workspace_path}
+                self.wfile.write(json.dumps(response).encode())
             elif self.path == '/files':
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
@@ -64,7 +67,7 @@ def create_handler(log_file: str, files_list: list | None = None):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: test_server.py <log_file> [port] [files_json]", file=sys.stderr)
+        print("Usage: test_server.py <log_file> [port] [files_json] [workspace]", file=sys.stderr)
         sys.exit(1)
 
     log_file = sys.argv[1]
@@ -72,8 +75,9 @@ def main():
     requested_port = int(sys.argv[2]) if len(sys.argv) > 2 else 0
     port = find_available_port() if requested_port == 0 else requested_port
     files_list = json.loads(sys.argv[3]) if len(sys.argv) > 3 else None
+    workspace_path = sys.argv[4] if len(sys.argv) > 4 else None
 
-    handler = create_handler(log_file, files_list)
+    handler = create_handler(log_file, files_list, workspace_path)
     server = http.server.HTTPServer(('127.0.0.1', port), handler)
 
     # Print port to stdout so caller can capture it

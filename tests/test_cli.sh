@@ -130,19 +130,24 @@ create_git_repo() {
 #-------------------------------------------------------------------------------
 # Helper: Start test server using standalone Python script
 # Returns the port via stdout, adds PID to SERVER_PIDS array
-# Usage: start_test_server <log_file> [files_json]
+# Usage: start_test_server <log_file> [files_json] [workspace]
 #-------------------------------------------------------------------------------
 start_test_server() {
     local log_file="$1"
     local files_json="${2:-}"
+    local workspace="${3:-}"
     local port_file="$TEST_TMPDIR/port_$$_$RANDOM"
 
-    # Start server in background, redirect first line (port) to file
-    if [[ -n "$files_json" ]]; then
-        python3 "$SCRIPT_DIR/test_server.py" "$log_file" 0 "$files_json" > "$port_file" &
-    else
-        python3 "$SCRIPT_DIR/test_server.py" "$log_file" > "$port_file" &
+    # Build args list for test_server.py: <log_file> <port> [files_json] [workspace]
+    local args=("$SCRIPT_DIR/test_server.py" "$log_file" "0")
+    if [[ -n "$files_json" || -n "$workspace" ]]; then
+        args+=("${files_json:-null}")
     fi
+    if [[ -n "$workspace" ]]; then
+        args+=("$workspace")
+    fi
+
+    python3 "${args[@]}" > "$port_file" &
     local pid=$!
     SERVER_PIDS+=("$pid")
 
@@ -189,7 +194,7 @@ test_resolves_relative_path() {
     # Start test server (gets dynamic port)
     local log_file="$TEST_TMPDIR/request.json"
     local port
-    port=$(start_test_server "$log_file")
+    port=$(start_test_server "$log_file" "" "$repo")
 
     # Create registry pointing to our server
     echo '{
@@ -221,7 +226,7 @@ test_detects_git_root() {
     # Start test server
     local log_file="$TEST_TMPDIR/request.json"
     local port
-    port=$(start_test_server "$log_file")
+    port=$(start_test_server "$log_file" "" "$repo")
 
     # Create registry
     echo '{
@@ -248,7 +253,7 @@ test_sends_correct_json_payload() {
 
     local log_file="$TEST_TMPDIR/request.json"
     local port
-    port=$(start_test_server "$log_file")
+    port=$(start_test_server "$log_file" "" "$repo")
 
     echo '{
         "version": 1,
@@ -279,7 +284,7 @@ test_zen_flag() {
 
     local log_file="$TEST_TMPDIR/request.json"
     local port
-    port=$(start_test_server "$log_file")
+    port=$(start_test_server "$log_file" "" "$repo")
 
     echo '{
         "version": 1,
@@ -305,7 +310,7 @@ test_line_number_parsing() {
 
     local log_file="$TEST_TMPDIR/request.json"
     local port
-    port=$(start_test_server "$log_file")
+    port=$(start_test_server "$log_file" "" "$repo")
 
     echo '{
         "version": 1,
@@ -333,9 +338,9 @@ test_picks_most_recent_window() {
     local old_log="$TEST_TMPDIR/old_request.json"
     local new_log="$TEST_TMPDIR/new_request.json"
     local old_port
-    old_port=$(start_test_server "$old_log")
+    old_port=$(start_test_server "$old_log" "" "$repo")
     local new_port
-    new_port=$(start_test_server "$new_log")
+    new_port=$(start_test_server "$new_log" "" "$repo")
 
     # Two windows for same workspace, different lastActive times
     # The newer one (port $new_port) has higher lastActive
@@ -414,7 +419,7 @@ test_list_open_files() {
 
     local log_file="$TEST_TMPDIR/request.json"
     local port
-    port=$(start_test_server "$log_file" "$files_json")
+    port=$(start_test_server "$log_file" "$files_json" "$repo")
 
     echo '{
         "version": 1,
@@ -482,7 +487,7 @@ test_path_based_fallback() {
     # Start test server
     local log_file="$TEST_TMPDIR/request.json"
     local port
-    port=$(start_test_server "$log_file")
+    port=$(start_test_server "$log_file" "" "$workspace")
 
     # Register the workspace (not a git repo)
     echo '{
@@ -516,7 +521,7 @@ test_orphan_workspace_config() {
     # Start test server for orphan workspace
     local log_file="$TEST_TMPDIR/request.json"
     local port
-    port=$(start_test_server "$log_file")
+    port=$(start_test_server "$log_file" "" "$orphan_workspace")
 
     # Register the orphan workspace
     echo '{
@@ -542,6 +547,104 @@ test_orphan_workspace_config() {
     local request
     request=$(cat "$log_file")
     assert_contains "$request" "$orphan_dir/file.txt" "Request should contain orphan file path"
+}
+
+test_workspace_identity_mismatch() {
+    # Server runs for workspace A, but registry says it's workspace B
+    # CLI should detect the mismatch and fall back
+    local repo_a="$TEST_TMPDIR/project-a"
+    local repo_b="$TEST_TMPDIR/project-b"
+    create_git_repo "$repo_a"
+    create_git_repo "$repo_b"
+    echo "code" > "$repo_b/test.py"
+
+    # Start server claiming to be workspace A
+    local log_file="$TEST_TMPDIR/request.json"
+    local port
+    port=$(start_test_server "$log_file" "" "$repo_a")
+
+    # Registry says this port belongs to workspace B
+    echo '{
+        "version": 1,
+        "windows": [{
+            "workspace": "'"$repo_b"'",
+            "port": '"$port"',
+            "pid": 99999,
+            "lastActive": 1737561234567
+        }]
+    }' > "$XDG_CONFIG_HOME/flocus/registry.json"
+
+    # CLI should detect mismatch and fall back to code command
+    local output
+    output=$(FLOCUS_DRY_RUN=1 "$FLOCUS_CLI" "$repo_b/test.py" 2>&1)
+    assert_contains "$output" "[dry-run] code" "Should fall back when workspace identity mismatches"
+}
+
+test_stale_entry_pruned_on_dead_server() {
+    # Registry points to a dead port — CLI should prune the stale entry
+    local repo="$TEST_TMPDIR/project"
+    create_git_repo "$repo"
+    echo "code" > "$repo/test.py"
+
+    echo '{
+        "version": 1,
+        "windows": [{
+            "workspace": "'"$repo"'",
+            "port": 19899,
+            "pid": 99999,
+            "lastActive": 1737561234567
+        }]
+    }' > "$XDG_CONFIG_HOME/flocus/registry.json"
+
+    # Run CLI (will fail to connect, should prune)
+    FLOCUS_DRY_RUN=1 "$FLOCUS_CLI" "$repo/test.py" >/dev/null 2>&1 || true
+
+    # Registry should no longer have the stale entry
+    local entry_count
+    entry_count=$(jq '.windows | length' "$XDG_CONFIG_HOME/flocus/registry.json")
+    assert_eq "0" "$entry_count" "Stale entry should be pruned from registry"
+}
+
+test_stale_entry_pruned_on_mismatch() {
+    # Server runs for workspace A, registry maps workspace B to same port
+    # CLI should prune workspace B's stale entry
+    local repo_a="$TEST_TMPDIR/project-a"
+    local repo_b="$TEST_TMPDIR/project-b"
+    create_git_repo "$repo_a"
+    create_git_repo "$repo_b"
+    echo "code" > "$repo_b/test.py"
+
+    # Start server for workspace A
+    local log_file="$TEST_TMPDIR/request.json"
+    local port
+    port=$(start_test_server "$log_file" "" "$repo_a")
+
+    # Registry has BOTH workspace A (correct) and workspace B (stale, same port)
+    echo '{
+        "version": 1,
+        "windows": [
+            {
+                "workspace": "'"$repo_a"'",
+                "port": '"$port"',
+                "pid": 99998,
+                "lastActive": 1000
+            },
+            {
+                "workspace": "'"$repo_b"'",
+                "port": '"$port"',
+                "pid": 99999,
+                "lastActive": 2000
+            }
+        ]
+    }' > "$XDG_CONFIG_HOME/flocus/registry.json"
+
+    # Try to open a file in workspace B — should detect mismatch and prune
+    FLOCUS_DRY_RUN=1 "$FLOCUS_CLI" "$repo_b/test.py" >/dev/null 2>&1 || true
+
+    # Workspace B's entry should be pruned, workspace A's should remain
+    local remaining
+    remaining=$(jq -r '.windows[].workspace' "$XDG_CONFIG_HOME/flocus/registry.json")
+    assert_eq "$repo_a" "$remaining" "Only workspace A should remain after pruning"
 }
 
 #-------------------------------------------------------------------------------
@@ -587,6 +690,9 @@ main() {
     run_test "Open directory" test_open_directory
     run_test "Path-based fallback" test_path_based_fallback
     run_test "Orphan workspace config" test_orphan_workspace_config
+    run_test "Workspace identity mismatch falls back" test_workspace_identity_mismatch
+    run_test "Stale entry pruned on dead server" test_stale_entry_pruned_on_dead_server
+    run_test "Stale entry pruned on workspace mismatch" test_stale_entry_pruned_on_mismatch
 
     echo ""
     echo "----------------------------------------"

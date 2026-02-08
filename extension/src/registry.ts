@@ -93,8 +93,12 @@ export function writeRegistry(registry: Registry): void {
 export function registerWindow(entry: WindowEntry): void {
     const registry = readRegistry();
 
-    // Remove any existing entry for this workspace
-    registry.windows = registry.windows.filter(w => w.workspace !== entry.workspace);
+    // Remove any existing entry for this workspace,
+    // AND remove stale entries from other workspaces that claim the same port
+    // (happens when a previous window crashed without cleaning up)
+    registry.windows = registry.windows.filter(
+        w => w.workspace !== entry.workspace && w.port !== entry.port
+    );
 
     // Add new entry
     registry.windows.push(entry);

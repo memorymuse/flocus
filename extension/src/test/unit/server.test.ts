@@ -101,10 +101,10 @@ describe('server', () => {
     });
 
     describe('createServer', () => {
-        it('should respond to health check', async () => {
+        it('should respond to health check with workspace identity', async () => {
             const port = await findAvailablePort(30400, 30500);
 
-            const server = createServer(port, async () => ({ success: true }));
+            const server = createServer(port, async () => ({ success: true }), '/test/workspace');
             servers.push(server);
 
             // Wait for server to start
@@ -117,7 +117,29 @@ describe('server', () => {
             });
 
             assert.strictEqual(res.status, 200);
-            assert.strictEqual(res.body, 'ok');
+            const body = JSON.parse(res.body);
+            assert.strictEqual(body.status, 'ok');
+            assert.strictEqual(body.workspace, '/test/workspace');
+        });
+
+        it('should respond to health check with null workspace when not provided', async () => {
+            const port = await findAvailablePort(30400, 30500);
+
+            const server = createServer(port, async () => ({ success: true }));
+            servers.push(server);
+
+            await new Promise((resolve) => setTimeout(resolve, 100));
+
+            const res = await request({
+                port,
+                method: 'GET',
+                path: '/health'
+            });
+
+            assert.strictEqual(res.status, 200);
+            const body = JSON.parse(res.body);
+            assert.strictEqual(body.status, 'ok');
+            assert.strictEqual(body.workspace, null);
         });
 
         it('should return 404 for unknown paths', async () => {

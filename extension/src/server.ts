@@ -81,7 +81,8 @@ function isPortAvailable(port: number): Promise<boolean> {
  */
 export function createServer(
     port: number,
-    handlers: OpenHandler | ServerHandlers
+    handlers: OpenHandler | ServerHandlers,
+    workspace?: string
 ): http.Server {
     // Support both old single-handler and new handlers object API
     const { onOpen, onFiles } = typeof handlers === 'function'
@@ -101,10 +102,10 @@ export function createServer(
             return;
         }
 
-        // Health check endpoint
+        // Health check endpoint — returns workspace identity for CLI verification
         if (req.method === 'GET' && req.url === '/health') {
-            res.writeHead(200, { 'Content-Type': 'text/plain' });
-            res.end('ok');
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ status: 'ok', workspace: workspace || null }));
             return;
         }
 
