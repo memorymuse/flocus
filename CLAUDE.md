@@ -69,8 +69,9 @@ npm run package        # Creates .vsix file
 | `cli/vo` | Main CLI script (bash), aliased as flocus |
 | `extension/src/extension.ts` | VS Code activation, file opening logic |
 | `extension/src/registry.ts` | Registry CRUD operations |
-| `extension/src/server.ts` | HTTP server with /health, /open, /files endpoints |
+| `extension/src/server.ts` | HTTP server with /health (returns workspace identity), /open, /files endpoints |
 | `docs/DESIGN.md` | Complete design document with all requirements |
+| `docs/PUBLISH.md` | Marketplace publication design (CLI bundling, config, checklist) |
 
 ## Implementation Status
 
@@ -79,7 +80,7 @@ npm run package        # Creates .vsix file
 - [x] Registry read/write
 - [x] CLI with git detection, registry lookup, HTTP request
 - [x] Basic file opening
-- [x] Integration tests (39 total: 16 CLI + 23 extension)
+- [x] Integration tests (44 total: 19 CLI + 25 extension)
 - [x] Window focus (brings VS Code to foreground)
 - [x] Clean CLI output (`Opened: filename`)
 - [x] Zen mode (`-z` flag hides sidebar/panels)
@@ -97,9 +98,9 @@ npm run package        # Creates .vsix file
 ### Phase 2 (Pending)
 - [ ] WSL2 testing
 
-### Phase 3 (Pending)
-- [ ] Custom editor mappings via config.json
-- [ ] Registry cleanup (prune stale entries)
+### Phase 3 (In Progress)
+- [ ] Custom editor mappings via VS Code settings (design in [PUBLISH.md](docs/PUBLISH.md) Section 3)
+- [x] Registry cleanup: stale entry pruning via health identity verification + registration-time port conflict cleanup
 
 ### Phase 4 (Nice-to-Have)
 - [ ] Auto zen mode for orphan files
@@ -139,6 +140,7 @@ The CLI tests use `FLOCUS_DRY_RUN=1` to prevent actually launching VS Code durin
 5. **Bash CLI**: Fast to prototype, no build step, works everywhere
 6. **Subcommand pattern**: `flocus open`, `flocus list` — modern CLI style, no namespace collisions
 7. **Window focus via `code $git_root`**: No VS Code API exists to bring window to foreground ([GitHub issue](https://github.com/microsoft/vscode/issues/74945)). Workaround: re-invoke `code` command which brings existing window forward without reloading
+8. **Health endpoint returns workspace identity**: `/health` returns `{"status":"ok","workspace":"/path"}` — enables CLI to verify it's talking to the right window, not a stale entry on a reused port
 
 ## Environment Variables
 
@@ -153,5 +155,6 @@ Note: Window focus is automatically skipped for `/tmp/*` paths to prevent tests 
 ## Common Issues
 
 - **Extension not activating**: Must have a folder open (not just a file)
-- **Wrong window**: Check registry has correct workspace path
-- **Port conflict**: Extension finds next available port automatically
+- **Wrong window**: Check registry has correct workspace path. Stale entries are auto-pruned on detection (workspace mismatch or dead server)
+- **Port conflict**: Extension finds next available port automatically. Registration cleans up stale entries from other workspaces on the same port
+- **Custom editor scroll issues**: Mark Sharp has an upstream bug where `getLastPosition()` defaults new docs to end-of-file. Local patch applied (see handoff `260207-1617`). Upstream issue: [mark-sharp#130](https://github.com/jonathanyeung/mark-sharp/issues/130)
