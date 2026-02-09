@@ -157,4 +157,5 @@ Note: Window focus is automatically skipped for `/tmp/*` paths to prevent tests 
 - **Extension not activating**: Must have a folder open (not just a file)
 - **Wrong window**: Check registry has correct workspace path. Stale entries are auto-pruned on detection (workspace mismatch or dead server)
 - **Port conflict**: Extension finds next available port automatically. Registration cleans up stale entries from other workspaces on the same port
-- **Custom editor scroll issues**: Mark Sharp has an upstream bug where `getLastPosition()` defaults new docs to end-of-file. Local patch applied (see handoff `260207-1617`). Upstream issue: [mark-sharp#130](https://github.com/jonathanyeung/mark-sharp/issues/130)
+- **Custom editor scroll issues**: Mark Sharp has an upstream bug where `getLastPosition()` defaults new docs to end-of-file. Upstream issue: [mark-sharp#130](https://github.com/jonathanyeung/mark-sharp/issues/130)
+  - **Local patch** (re-apply after Mark Sharp updates): In `~/.vscode-server/extensions/jonathan-yeung.mark-sharp-1.9.1/dist/extension.js`, replace `getLastPosition(e){const t=e.lineCount-1,n=e.lineAt(t).text.length;return new f.Position(t,n)}` with `getLastPosition(e){return new f.Position(0,0)}`
