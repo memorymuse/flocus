@@ -130,6 +130,8 @@ The CLI tests use `FLOCUS_DRY_RUN=1` to prevent actually launching VS Code durin
 
 - **Registry**: `~/.config/flocus/registry.json` - auto-managed by extension
 - **Config**: `~/.config/flocus/config.json` - user settings
+- **Invocation log**: `~/.config/flocus/flocus.log` - always-on CLI + extension event log
+- **Pending marker**: `~/.config/flocus/.pending` - transient file for CLI→extension coordination (auto-cleaned)
 
 ## Important Design Decisions
 
@@ -152,10 +154,29 @@ The CLI tests use `FLOCUS_DRY_RUN=1` to prevent actually launching VS Code durin
 
 Note: Window focus is automatically skipped for `/tmp/*` paths to prevent tests from opening VS Code windows.
 
+## Debugging — READ THIS FIRST
+
+**When a bug is reported, check the invocation log FIRST before investigating code.**
+
+```bash
+# Show the last 10 invocations (adjust N as needed — keep it small to save tokens)
+tail -n 60 ~/.config/flocus/flocus.log
+```
+
+The log at `~/.config/flocus/flocus.log` records every CLI invocation with the full decision chain: args, pwd, resolved path, git root, registry lookup results, health check responses, HTTP responses, which `code` command was executed, and exit path. All facts, no interpretation.
+
+The extension also logs to this file when it receives a `code`-fallback open (coordinated via `.pending` marker). This closes the observability gap — you can see which window actually caught the file:
+```
+[...] action=fallback_to_code ...
+[...] exec=code args=/path/to/file
+[...] extension code_fallback_received workspace=/home/.../project file=/path/to/file
+```
+
 ## Common Issues
 
 - **Extension not activating**: Must have a folder open (not just a file)
 - **Wrong window**: Check registry has correct workspace path. Stale entries are auto-pruned on detection (workspace mismatch or dead server)
 - **Port conflict**: Extension finds next available port automatically. Registration cleans up stale entries from other workspaces on the same port
-- **Custom editor scroll issues**: Mark Sharp has an upstream bug where `getLastPosition()` defaults new docs to end-of-file. Upstream issue: [mark-sharp#130](https://github.com/jonathanyeung/mark-sharp/issues/130)
-  - **Local patch** (re-apply after Mark Sharp updates): In `~/.vscode-server/extensions/jonathan-yeung.mark-sharp-1.9.1/dist/extension.js`, replace `getLastPosition(e){const t=e.lineCount-1,n=e.lineAt(t).text.length;return new f.Position(t,n)}` with `getLastPosition(e){return new f.Position(0,0)}`
+- **Custom editor scroll issues**: Mark Sharp has an upstream bug where `getLastPosition()` defaults new docs to end-of-file. Upstream issue: [mark-sharp#130](https://github.com/jonathanyeung/mark-sharp/issues/130) (open, root cause posted by `robeotx` on Feb 8 2026, no maintainer response yet — check periodically)
+  - **Local patch**: In `~/.vscode-server/extensions/jonathan-yeung.mark-sharp-1.9.1/dist/extension.js`, replace `getLastPosition(e){const t=e.lineCount-1,n=e.lineAt(t).text.length;return new f.Position(t,n)}` with `getLastPosition(e){return new f.Position(0,0)}`
+  - **Auto-updates disabled** for Mark Sharp to preserve the patch. Re-enable when upstream fix ships.

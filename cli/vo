@@ -32,6 +32,7 @@ set -euo pipefail
 REGISTRY_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/flocus"
 REGISTRY_FILE="$REGISTRY_DIR/registry.json"
 CONFIG_FILE="$REGISTRY_DIR/config.json"
+LOG_FILE="$REGISTRY_DIR/flocus.log"
 HEALTH_TIMEOUT=0.5  # seconds to wait for health check
 REQUEST_TIMEOUT=2   # seconds to wait for open request
 
@@ -131,9 +132,17 @@ EOF
 }
 
 #-------------------------------------------------------------------------------
-# Logging (only in debug mode)
+# Logging
 #-------------------------------------------------------------------------------
 
+# Persistent invocation log — always writes to LOG_FILE
+log() {
+    local ts
+    ts=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$ts] $*" >> "$LOG_FILE"
+}
+
+# Debug output — only to stderr when FLOCUS_DEBUG=1
 debug() {
     if [[ "${FLOCUS_DEBUG:-}" == "1" ]]; then
         echo "[flocus] $*" >&2
@@ -397,15 +406,22 @@ fallback_to_code() {
         else
             echo "[dry-run] code $file"
         fi
+        log "exit=fallback dry_run=true"
         return 0
     fi
 
+    # Signal to extension which file we're about to open via code fallback
+    echo "$file" > "$REGISTRY_DIR/.pending"
+
     # Open with project context if we have git root
     if [[ -n "$git_root" ]]; then
+        log "exec=code args=$git_root $file"
         code "$git_root" "$file"
     else
+        log "exec=code args=$file"
         code "$file"
     fi
+    log "exit=fallback code_exit=$?"
 }
 
 #-------------------------------------------------------------------------------
@@ -413,16 +429,24 @@ fallback_to_code() {
 #-------------------------------------------------------------------------------
 
 main() {
+    # Ensure log directory exists
+    mkdir -p "$REGISTRY_DIR"
+
     parse_args "$@"
+
+    log "--- invocation: $0 $*"
+    log "pwd=$(pwd) file=$FILE line=$LINE zen=$ZEN raw=$RAW list=$LIST"
 
     # Handle list mode
     if [[ "$LIST" == "true" ]]; then
+        log "mode=list"
         list_files
         exit $?
     fi
 
     # Validate file argument
     if [[ -z "$FILE" ]]; then
+        log "exit=error reason=no_file_specified"
         echo "Error: No file or directory specified" >&2
         echo "" >&2
         usage >&2
@@ -433,9 +457,11 @@ main() {
     local abs_path
     abs_path=$(resolve_absolute_path "$FILE")
     debug "Resolved path: $abs_path"
+    log "resolved_path=$abs_path exists=$(test -e "$abs_path" && echo yes || echo no)"
 
     # Step 2: Handle directories
     if [[ -d "$abs_path" ]]; then
+        log "mode=directory"
         open_directory "$abs_path"
         exit $?
     fi
@@ -451,29 +477,36 @@ main() {
 open_directory() {
     local dir_path="$1"
     debug "Opening directory: $dir_path"
+    log "open_directory dir=$dir_path"
 
     # Check if this directory is already registered
     local port
     port=$(find_matching_port "$dir_path")
+    log "registry_lookup workspace=$dir_path port=${port:-<none>}"
 
     if [[ -n "$port" ]] && verify_server "$port" "$dir_path"; then
         debug "Directory already open, focusing window"
+        log "action=focus_existing port=$port"
         # Just focus the window - no file to open
         if [[ "${FLOCUS_DRY_RUN:-}" == "1" ]]; then
             echo "[dry-run] code $dir_path"
         else
+            log "exec=code args=$dir_path"
             code "$dir_path"
             echo "Focused: $(basename "$dir_path")"
         fi
     else
         # Open the directory in a new VS Code window
+        log "action=open_new_window"
         if [[ "${FLOCUS_DRY_RUN:-}" == "1" ]]; then
             echo "[dry-run] code $dir_path"
         else
+            log "exec=code args=$dir_path"
             code "$dir_path"
             echo "Opened: $(basename "$dir_path")"
         fi
     fi
+    log "exit=ok"
 }
 
 #-------------------------------------------------------------------------------
@@ -482,11 +515,13 @@ open_directory() {
 
 open_file() {
     local abs_path="$1"
+    log "open_file path=$abs_path"
 
     # Step 1: Try git root matching
     local git_root
     git_root=$(detect_git_root "$abs_path")
     debug "Git root: ${git_root:-<none>}"
+    log "git_root=${git_root:-<none>}"
 
     local port=""
     local workspace=""
@@ -494,6 +529,7 @@ open_file() {
     if [[ -n "$git_root" ]]; then
         port=$(find_matching_port "$git_root")
         workspace="$git_root"
+        log "step=git_root_lookup workspace=$workspace port=${port:-<none>}"
     fi
 
     # Step 2: Try path-based fallback (file under any registered workspace)
@@ -504,6 +540,9 @@ open_file() {
             workspace="${parent_result%%:*}"
             port="${parent_result##*:}"
             debug "Using parent workspace: $workspace on port $port"
+            log "step=parent_workspace workspace=$workspace port=$port"
+        else
+            log "step=parent_workspace result=no_match"
         fi
     fi
 
@@ -516,17 +555,28 @@ open_file() {
             if [[ -n "$port" ]]; then
                 workspace="$orphan_workspace"
                 debug "Using orphan workspace: $workspace on port $port"
+                log "step=orphan_workspace workspace=$workspace port=$port"
+            else
+                log "step=orphan_workspace configured=$orphan_workspace result=not_registered"
             fi
+        else
+            log "step=orphan_workspace result=not_configured"
         fi
     fi
 
     # Step 4: Try to send request to extension
     if [[ -n "$port" ]]; then
+        log "health_check port=$port workspace=$workspace"
         if verify_server "$port" "$workspace"; then
             debug "Server verified on port $port for workspace $workspace"
+            local health_response
+            health_response=$(curl -s --max-time "$HEALTH_TIMEOUT" "http://127.0.0.1:$port/health" 2>/dev/null || echo "<no response>")
+            log "health_response=$health_response"
+
             local response
             response=$(send_open_request "$port" "$abs_path" "$LINE" "$ZEN" "$RAW")
             if [[ $? -eq 0 ]]; then
+                log "open_request port=$port curl_ok=true response=$response"
                 local success
                 success=$(echo "$response" | jq -r '.success // false')
                 if [[ "$success" == "true" ]]; then
@@ -537,24 +587,34 @@ open_file() {
                     # Bring VS Code window to foreground
                     # Skip for temp directories (test environment) or if FLOCUS_NO_FOCUS is set
                     if [[ -z "${FLOCUS_NO_FOCUS:-}" && "$workspace" != /tmp/* ]]; then
+                        log "exec=code_background args=$workspace"
                         code "$workspace" >/dev/null 2>&1 &
+                    else
+                        log "window_focus=skipped no_focus=${FLOCUS_NO_FOCUS:-0} workspace=$workspace"
                     fi
+                    log "exit=ok opened=$filename"
                     exit 0
                 else
                     local error
                     error=$(echo "$response" | jq -r '.error // "Unknown error"')
+                    log "exit=error reason=open_failed error=$error"
                     echo "Error: $error" >&2
                     exit 1
                 fi
             fi
+            log "open_request port=$port curl_ok=false"
             debug "Request failed"
         else
             debug "Server not verified on port $port, pruning stale entry"
+            log "health_check=failed action=prune port=$port workspace=$workspace"
             prune_registry_entry "$workspace" "$port"
         fi
+    else
+        log "no_matching_port"
     fi
 
     # Step 5: Fallback to code command
+    log "action=fallback_to_code git_root=${git_root:-<none>}"
     fallback_to_code "$abs_path" "$git_root"
 }
 
@@ -567,15 +627,18 @@ list_files() {
     cwd=$(pwd)
     local port=""
     local workspace=""
+    log "list_files cwd=$cwd"
 
     # Try git root first
     local git_root
     git_root=$(detect_git_root "$cwd")
     debug "Git root: ${git_root:-<none>}"
+    log "git_root=${git_root:-<none>}"
 
     if [[ -n "$git_root" ]]; then
         port=$(find_matching_port "$git_root")
         workspace="$git_root"
+        log "step=git_root_lookup workspace=$workspace port=${port:-<none>}"
     fi
 
     # Try path-based fallback
@@ -586,6 +649,7 @@ list_files() {
             workspace="${parent_result%%:*}"
             port="${parent_result##*:}"
             debug "Using parent workspace: $workspace on port $port"
+            log "step=parent_workspace workspace=$workspace port=$port"
         fi
     fi
 
@@ -598,22 +662,26 @@ list_files() {
             if [[ -n "$port" ]]; then
                 workspace="$orphan_workspace"
                 debug "Using orphan workspace: $workspace on port $port"
+                log "step=orphan_workspace workspace=$workspace port=$port"
             fi
         fi
     fi
 
     if [[ -z "$port" ]]; then
+        log "exit=error reason=no_matching_window"
         echo "Error: No VS Code window found for this location" >&2
         exit 1
     fi
 
     if ! verify_server "$port" "$workspace"; then
+        log "exit=error reason=server_not_responding port=$port action=prune"
         prune_registry_entry "$workspace" "$port"
         echo "Error: VS Code extension not responding (stale entry cleaned)" >&2
         exit 1
     fi
 
     debug "Server verified on port $port for workspace $workspace"
+    log "health_check=ok port=$port"
 
     local response
     response=$(send_files_request "$port")
@@ -624,9 +692,14 @@ list_files() {
     if [[ "$success" != "true" ]]; then
         local error
         error=$(echo "$response" | jq -r '.error // "Unknown error"')
+        log "exit=error reason=files_request_failed error=$error"
         echo "Error: $error" >&2
         exit 1
     fi
+
+    local file_count
+    file_count=$(echo "$response" | jq '.files | length')
+    log "exit=ok files_count=$file_count"
 
     # Print each file path on its own line
     echo "$response" | jq -r '.files[]'

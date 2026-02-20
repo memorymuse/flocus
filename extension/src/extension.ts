@@ -15,7 +15,9 @@
 
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import * as http from 'http';
+import * as os from 'os';
 
 import { registerWindow, unregisterWindow, updateLastActive } from './registry';
 import { createServer, findAvailablePort, OpenRequest, OpenResponse, FilesResponse } from './server';
@@ -67,6 +69,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 }
             })
         );
+
+        // Log document opens triggered by CLI code-fallback
+        registerFallbackOpenLogger(context);
 
         // Register cleanup on deactivation
         context.subscriptions.push({
@@ -258,4 +263,67 @@ function getCustomEditor(ext: string): string | undefined {
 
     // TODO: Read from ~/.config/flocus/config.json for user customization
     return defaultEditors[ext];
+}
+
+// ---------------------------------------------------------------------------
+// Invocation log — shared with CLI at ~/.config/flocus/flocus.log
+// ---------------------------------------------------------------------------
+
+const FLOCUS_CONFIG_DIR = path.join(os.homedir(), '.config', 'flocus');
+const LOG_FILE = path.join(FLOCUS_CONFIG_DIR, 'flocus.log');
+const PENDING_FILE = path.join(FLOCUS_CONFIG_DIR, '.pending');
+const PENDING_MAX_AGE_MS = 5000; // ignore stale .pending older than 5 seconds
+
+/**
+ * Append a line to the shared invocation log.
+ */
+function logToFile(message: string): void {
+    try {
+        const timestamp = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+        fs.appendFileSync(LOG_FILE, `[${timestamp}] ${message}\n`);
+    } catch {
+        // Best-effort — don't break the extension if logging fails
+    }
+}
+
+/**
+ * Check if a file path matches the CLI's .pending marker.
+ * Returns true and clears the marker if matched.
+ */
+function matchAndClearPending(openedFilePath: string): boolean {
+    try {
+        const stat = fs.statSync(PENDING_FILE);
+        const ageMs = Date.now() - stat.mtimeMs;
+        if (ageMs > PENDING_MAX_AGE_MS) {
+            // Stale — clean up and ignore
+            fs.unlinkSync(PENDING_FILE);
+            return false;
+        }
+        const pendingPath = fs.readFileSync(PENDING_FILE, 'utf-8').trim();
+        if (pendingPath === openedFilePath) {
+            fs.unlinkSync(PENDING_FILE);
+            return true;
+        }
+    } catch {
+        // .pending doesn't exist or unreadable — normal case
+    }
+    return false;
+}
+
+/**
+ * Register a listener that logs document opens triggered by CLI code-fallback.
+ * Only fires for files matching the .pending marker left by the CLI.
+ */
+function registerFallbackOpenLogger(context: vscode.ExtensionContext): void {
+    context.subscriptions.push(
+        vscode.workspace.onDidOpenTextDocument((document) => {
+            if (document.uri.scheme !== 'file') {
+                return;
+            }
+            const filePath = document.uri.fsPath;
+            if (matchAndClearPending(filePath)) {
+                logToFile(`extension code_fallback_received workspace=${workspaceRoot} file=${filePath}`);
+            }
+        })
+    );
 }
