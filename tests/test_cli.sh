@@ -237,6 +237,173 @@ test_nonexistent_path_errors_early() {
     assert_contains "$output" "does not exist" "Should error on nonexistent path"
 }
 
+#-------------------------------------------------------------------------------
+# Glob Pattern Tests
+#-------------------------------------------------------------------------------
+
+test_glob_single_match_opens_file() {
+    local repo="$TEST_TMPDIR/myproject"
+    create_git_repo "$repo"
+    mkdir -p "$repo/docs"
+    echo "design" > "$repo/docs/DESIGN.md"
+    git -C "$repo" add docs/DESIGN.md
+    git -C "$repo" commit -m "add design" --quiet
+
+    # Start test server
+    local log_file="$TEST_TMPDIR/request.json"
+    local port
+    port=$(start_test_server "$log_file" "" "$repo")
+
+    echo '{
+        "version": 1,
+        "windows": [{"workspace": "'"$repo"'", "port": '"$port"', "pid": 99999, "lastActive": 1737561234567}]
+    }' > "$XDG_CONFIG_HOME/flocus/registry.json"
+
+    local output
+    output=$(cd "$repo" && FLOCUS_NO_FOCUS=1 "$FLOCUS_CLI" '*DESIGN*' 2>&1)
+
+    assert_contains "$output" "Opened: DESIGN.md" "Should open the matched file"
+}
+
+test_glob_case_insensitive() {
+    local repo="$TEST_TMPDIR/myproject"
+    create_git_repo "$repo"
+    echo "readme" > "$repo/README.md"
+    git -C "$repo" add README.md
+    git -C "$repo" commit -m "add readme" --quiet
+
+    local log_file="$TEST_TMPDIR/request.json"
+    local port
+    port=$(start_test_server "$log_file" "" "$repo")
+
+    echo '{
+        "version": 1,
+        "windows": [{"workspace": "'"$repo"'", "port": '"$port"', "pid": 99999, "lastActive": 1737561234567}]
+    }' > "$XDG_CONFIG_HOME/flocus/registry.json"
+
+    local output
+    output=$(cd "$repo" && FLOCUS_NO_FOCUS=1 "$FLOCUS_CLI" '*readme*' 2>&1)
+
+    assert_contains "$output" "Opened: README.md" "Should match case-insensitively"
+}
+
+test_glob_with_path_pattern() {
+    local repo="$TEST_TMPDIR/myproject"
+    create_git_repo "$repo"
+    mkdir -p "$repo/src/app"
+    echo "test" > "$repo/src/app/test_main.py"
+    git -C "$repo" add src/app/test_main.py
+    git -C "$repo" commit -m "add test" --quiet
+
+    local log_file="$TEST_TMPDIR/request.json"
+    local port
+    port=$(start_test_server "$log_file" "" "$repo")
+
+    echo '{
+        "version": 1,
+        "windows": [{"workspace": "'"$repo"'", "port": '"$port"', "pid": 99999, "lastActive": 1737561234567}]
+    }' > "$XDG_CONFIG_HOME/flocus/registry.json"
+
+    local output
+    output=$(cd "$repo" && FLOCUS_NO_FOCUS=1 "$FLOCUS_CLI" 'src/*/test_*.py' 2>&1)
+
+    assert_contains "$output" "Opened: test_main.py" "Should match path pattern"
+}
+
+test_glob_multiple_matches_lists() {
+    local repo="$TEST_TMPDIR/myproject"
+    create_git_repo "$repo"
+    echo "a" > "$repo/alpha.py"
+    echo "b" > "$repo/beta.py"
+    git -C "$repo" add alpha.py beta.py
+    git -C "$repo" commit -m "add py files" --quiet
+
+    local output
+    output=$(cd "$repo" && "$FLOCUS_CLI" '*.py' 2>&1 || true)
+
+    assert_contains "$output" "Multiple matches" "Should report multiple matches" || return 1
+    assert_contains "$output" "alpha.py" "Should list alpha.py" || return 1
+    assert_contains "$output" "beta.py" "Should list beta.py"
+}
+
+test_glob_no_matches_errors() {
+    local repo="$TEST_TMPDIR/myproject"
+    create_git_repo "$repo"
+    echo "content" > "$repo/file.txt"
+    git -C "$repo" add file.txt
+    git -C "$repo" commit -m "add file" --quiet
+
+    local output
+    output=$(cd "$repo" && "$FLOCUS_CLI" '*.xyz' 2>&1 || true)
+
+    assert_contains "$output" "No files matching" "Should error on zero matches"
+}
+
+test_glob_with_line_number() {
+    local repo="$TEST_TMPDIR/myproject"
+    create_git_repo "$repo"
+    mkdir -p "$repo/docs"
+    echo "design" > "$repo/docs/DESIGN.md"
+    git -C "$repo" add docs/DESIGN.md
+    git -C "$repo" commit -m "add design" --quiet
+
+    local log_file="$TEST_TMPDIR/request.json"
+    local port
+    port=$(start_test_server "$log_file" "" "$repo")
+
+    echo '{
+        "version": 1,
+        "windows": [{"workspace": "'"$repo"'", "port": '"$port"', "pid": 99999, "lastActive": 1737561234567}]
+    }' > "$XDG_CONFIG_HOME/flocus/registry.json"
+
+    local output
+    output=$(cd "$repo" && FLOCUS_NO_FOCUS=1 "$FLOCUS_CLI" '*DESIGN*:42' 2>&1)
+
+    assert_contains "$output" "Opened: DESIGN.md" "Should open matched file" || return 1
+
+    # Verify line number was sent in request
+    local request
+    request=$(cat "$log_file")
+    assert_contains "$request" '"line": 42' "Should send line number"
+}
+
+test_glob_non_git_fallback() {
+    # Non-git directory should use find instead of git ls-files
+    local dir="$TEST_TMPDIR/standalone"
+    mkdir -p "$dir/sub"
+    echo "content" > "$dir/sub/notes.txt"
+
+    local output
+    output=$(cd "$dir" && FLOCUS_DRY_RUN=1 "$FLOCUS_CLI" '*.txt' 2>&1)
+
+    assert_contains "$output" "[dry-run] code" "Should find file and fall back to code"
+}
+
+test_glob_normal_path_unaffected() {
+    # A normal path (no glob chars) should not trigger glob expansion
+    local repo="$TEST_TMPDIR/myproject"
+    create_git_repo "$repo"
+    echo "content" > "$repo/main.py"
+
+    local log_file="$TEST_TMPDIR/request.json"
+    local port
+    port=$(start_test_server "$log_file" "" "$repo")
+
+    echo '{
+        "version": 1,
+        "windows": [{"workspace": "'"$repo"'", "port": '"$port"', "pid": 99999, "lastActive": 1737561234567}]
+    }' > "$XDG_CONFIG_HOME/flocus/registry.json"
+
+    local output
+    output=$(cd "$repo" && FLOCUS_NO_FOCUS=1 "$FLOCUS_CLI" main.py 2>&1)
+
+    assert_contains "$output" "Opened: main.py" "Normal path should open without glob"
+}
+
+#-------------------------------------------------------------------------------
+# Path Resolution Tests
+#-------------------------------------------------------------------------------
+
 test_resolves_relative_path() {
     # Create a git repo and file
     local repo="$TEST_TMPDIR/myproject"
@@ -732,6 +899,14 @@ main() {
     run_test "No args focuses cwd outside git" test_no_args_focuses_cwd_outside_git
     run_test "No args focuses registered window" test_no_args_focuses_registered_window
     run_test "Nonexistent path errors early" test_nonexistent_path_errors_early
+    run_test "Glob single match opens file" test_glob_single_match_opens_file
+    run_test "Glob case-insensitive match" test_glob_case_insensitive
+    run_test "Glob with path pattern" test_glob_with_path_pattern
+    run_test "Glob multiple matches lists files" test_glob_multiple_matches_lists
+    run_test "Glob no matches errors" test_glob_no_matches_errors
+    run_test "Glob with line number" test_glob_with_line_number
+    run_test "Glob non-git fallback" test_glob_non_git_fallback
+    run_test "Glob normal path unaffected" test_glob_normal_path_unaffected
     run_test "Resolves relative paths to absolute" test_resolves_relative_path
     run_test "Detects git root correctly" test_detects_git_root
     run_test "Sends correct JSON payload" test_sends_correct_json_payload

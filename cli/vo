@@ -86,10 +86,18 @@ Examples:
   flocus open src/main.py          Open file in correct project window
   flocus open src/main.py:42       Open at line 42
   flocus open ~/projects/myapp     Open directory (registers for future calls)
-  flocus open src/ --all           Open all files in src/ (NOT YET IMPLEMENTED)
   flocus open -z README.md         Open in zen mode
   flocus open --raw doc.md         Open markdown with default editor
   flocus list                      List all open files
+
+Patterns (quote to prevent shell expansion):
+  flocus '*DESIGN*'                Find files with DESIGN in the name
+  flocus 'src/*.py'                Find .py files in src/
+  flocus '*.test.ts'               Find test files anywhere in project
+
+  Patterns are matched case-insensitively within the git repository
+  (or cwd if not in a git repo). Single match opens the file;
+  multiple matches print a numbered list.
 
 Matching priority:
   1. Git repository root (if file is in a git repo)
@@ -131,6 +139,7 @@ Common patterns:
   flocus open <dir>        Open/focus folder (seeds registry for future calls)
   flocus list              List open tabs
   flocus open -z <file>    Zen mode (hide sidebar/panels)
+  flocus '*DESIGN*'        Glob pattern (finds files in project, quote the pattern)
 
 Refer to 'flocus --help' for full option details.
 EOF
@@ -398,6 +407,137 @@ send_files_request() {
         -X GET "http://127.0.0.1:$port/files"
 }
 
+#-------------------------------------------------------------------------------
+# Glob Pattern Expansion
+#-------------------------------------------------------------------------------
+
+# Directories to skip when using find (non-git fallback)
+GLOB_SKIP_DIRS=(.git node_modules __pycache__ .venv .tox .mypy_cache .pytest_cache build dist .eggs .cache)
+
+# Check if a string contains glob metacharacters
+is_glob_pattern() {
+    [[ "$1" == *'*'* || "$1" == *'?'* || "$1" == *'['* ]]
+}
+
+# Sort file paths by depth (shallowest first), then alphabetically
+sort_by_depth() {
+    awk -F/ '{print NF, $0}' | sort -n -k1,1 -k2 | cut -d' ' -f2-
+}
+
+# Search for files matching a glob pattern using git ls-files.
+# Bash's [[ == ]] with unquoted RHS does glob matching; we lowercase
+# both sides for case-insensitive comparison.
+expand_glob_git() {
+    local pattern="$1"
+    local search_root="$2"
+    local has_slash="$3"
+
+    local lc_pattern="${pattern,,}"
+
+    git -C "$search_root" ls-files --cached --others --exclude-standard 2>/dev/null \
+        | while IFS= read -r rel; do
+            local target
+            if [[ "$has_slash" == "true" ]]; then
+                target="${rel,,}"
+            else
+                target="${rel##*/}"
+                target="${target,,}"
+            fi
+            # Unquoted RHS enables glob matching
+            if [[ "$target" == $lc_pattern ]]; then
+                echo "$search_root/$rel"
+            fi
+        done | sort_by_depth
+}
+
+# Search for files matching a glob pattern using find.
+# Fallback for directories not under git.
+expand_glob_find() {
+    local pattern="$1"
+    local search_root="$2"
+    local has_slash="$3"
+
+    # Build prune expression for skip directories
+    local prune_expr=()
+    for dir in "${GLOB_SKIP_DIRS[@]}"; do
+        if [[ ${#prune_expr[@]} -gt 0 ]]; then
+            prune_expr+=(-o)
+        fi
+        prune_expr+=(-name "$dir")
+    done
+
+    if [[ "$has_slash" == "true" ]]; then
+        find "$search_root" \( "${prune_expr[@]}" \) -prune -o -type f -ipath "*/$pattern" -print 2>/dev/null | sort_by_depth
+    else
+        find "$search_root" \( "${prune_expr[@]}" \) -prune -o -type f -iname "$pattern" -print 2>/dev/null | sort_by_depth
+    fi
+}
+
+# Expand a glob pattern to a single matching file within the project.
+# On single match: sets FILE to the absolute path and returns.
+# On zero/multiple matches: prints diagnostic message and exits.
+expand_glob() {
+    local pattern="$FILE"
+
+    # Determine search scope: git root of cwd, or cwd itself
+    local search_root
+    local is_git=false
+    search_root=$(detect_git_root "$(pwd)")
+    if [[ -n "$search_root" ]]; then
+        is_git=true
+    else
+        search_root="$(pwd)"
+    fi
+    debug "Glob search: pattern=$pattern root=$search_root git=$is_git"
+    log "glob_expand pattern=$pattern search_root=$search_root is_git=$is_git"
+
+    # Detect whether pattern includes directory separators
+    local has_slash=false
+    [[ "$pattern" == */* ]] && has_slash=true
+
+    # Expand using git or find
+    local matches
+    if [[ "$is_git" == true ]]; then
+        matches=$(expand_glob_git "$pattern" "$search_root" "$has_slash")
+    else
+        matches=$(expand_glob_find "$pattern" "$search_root" "$has_slash")
+    fi
+
+    # Handle results: 0, 1, or N matches
+    if [[ -z "$matches" ]]; then
+        log "exit=error reason=glob_no_matches pattern=$pattern"
+        echo "Error: No files matching '$pattern' in $search_root" >&2
+        exit 1
+    fi
+
+    local match_count
+    match_count=$(echo "$matches" | wc -l)
+
+    if [[ "$match_count" -eq 1 ]]; then
+        FILE="$matches"
+        debug "Glob expanded: $pattern -> $FILE"
+        log "glob_match pattern=$pattern result=$FILE"
+        return 0
+    fi
+
+    # Multiple matches — print numbered list and exit
+    log "glob_multiple pattern=$pattern count=$match_count"
+    echo "Multiple matches for '$pattern':" >&2
+    local i=1
+    while IFS= read -r match; do
+        local rel_path="${match#$search_root/}"
+        printf "  %d. %s\n" "$i" "$rel_path" >&2
+        ((i++))
+    done <<< "$matches"
+    echo "" >&2
+    echo "Narrow your pattern to match exactly one file." >&2
+    exit 1
+}
+
+#-------------------------------------------------------------------------------
+# Fallback
+#-------------------------------------------------------------------------------
+
 fallback_to_code() {
     local file="$1"
     local git_root="$2"
@@ -455,6 +595,12 @@ main() {
         git_root=$(detect_git_root "$(pwd)")
         FILE="${git_root:-$(pwd)}"
         log "mode=focus_project target=$FILE"
+    fi
+
+    # Glob expansion: resolve wildcard patterns to concrete file paths
+    if is_glob_pattern "$FILE"; then
+        expand_glob
+        # FILE is now set to the single matching absolute path
     fi
 
     # Step 1: Resolve to absolute path
