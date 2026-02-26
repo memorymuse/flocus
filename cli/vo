@@ -7,6 +7,7 @@
 # developer focus and reducing cognitive overhead.
 #
 # Usage:
+#   flocus                    Focus current project's VS Code window
 #   flocus open <file>        Open file in matching VS Code window
 #   flocus open <file>:123    Open file at line 123
 #   flocus open -z <file>     Open in zen mode (hide sidebar/panels)
@@ -61,13 +62,15 @@ get_config_value() {
 
 usage() {
     cat <<EOF
-Usage: flocus open [OPTIONS] <file>[:<line>]
-       flocus open [OPTIONS] <directory>
+Usage: flocus [OPTIONS] [<file>[:<line>]]
+       flocus [OPTIONS] <directory>
        flocus list
 
 Open a file or directory in the correct VS Code window.
+When called with no arguments, focuses the VS Code window for the current project.
 
 Commands:
+  (no args)     Focus the VS Code window for the current project (git root or cwd)
   open          Open a file or directory
   list          List all open files in the current project's VS Code window
 
@@ -79,6 +82,7 @@ Options (for 'open'):
   --agent       Show context for AI agents
 
 Examples:
+  flocus                           Focus current project's VS Code window
   flocus open src/main.py          Open file in correct project window
   flocus open src/main.py:42       Open at line 42
   flocus open ~/projects/myapp     Open directory (registers for future calls)
@@ -122,6 +126,7 @@ Match priority (automatic — just run 'flocus open <file>'):
   4. Fallback         — runs 'code' command (opens in last focused window)
 
 Common patterns:
+  flocus                   Focus current project's VS Code window
   flocus open <file>       Open in correct window
   flocus open <dir>        Open/focus folder (seeds registry for future calls)
   flocus list              List open tabs
@@ -425,6 +430,34 @@ fallback_to_code() {
 }
 
 #-------------------------------------------------------------------------------
+# Focus Project (no-arg default)
+#-------------------------------------------------------------------------------
+
+focus_project() {
+    local cwd
+    cwd=$(pwd)
+    log "focus_project cwd=$cwd"
+
+    # Resolve to git root if in a git repo — this matches how flocus
+    # routes files, so "vo" focuses the same window that "vo <file>" targets
+    local target
+    local git_root
+    git_root=$(detect_git_root "$cwd")
+
+    if [[ -n "$git_root" ]]; then
+        target="$git_root"
+        debug "Focus project via git root: $target"
+        log "focus_target=git_root path=$target"
+    else
+        target="$cwd"
+        debug "Focus project via cwd: $target"
+        log "focus_target=cwd path=$target"
+    fi
+
+    open_directory "$target"
+}
+
+#-------------------------------------------------------------------------------
 # Main
 #-------------------------------------------------------------------------------
 
@@ -444,13 +477,11 @@ main() {
         exit $?
     fi
 
-    # Validate file argument
+    # Default: no file specified → focus project window for cwd
     if [[ -z "$FILE" ]]; then
-        log "exit=error reason=no_file_specified"
-        echo "Error: No file or directory specified" >&2
-        echo "" >&2
-        usage >&2
-        exit 1
+        log "mode=focus_project"
+        focus_project
+        exit $?
     fi
 
     # Step 1: Resolve to absolute path

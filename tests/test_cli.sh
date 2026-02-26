@@ -178,10 +178,56 @@ test_cli_exists_and_executable() {
     [[ -x "$FLOCUS_CLI" ]] || return 1
 }
 
-test_requires_file_argument() {
+test_no_args_focuses_project_in_git_repo() {
+    # When called with no args inside a git repo, should focus the project window
+    local repo="$TEST_TMPDIR/myproject"
+    create_git_repo "$repo"
+
     local output
-    output=$("$FLOCUS_CLI" 2>&1 || true)
-    assert_contains "$output" "Usage" "Should show usage when no file given"
+    output=$(cd "$repo/src" 2>/dev/null || cd "$repo" && FLOCUS_DRY_RUN=1 "$FLOCUS_CLI" 2>&1)
+
+    # Should try to open the git root directory (not the subdirectory)
+    assert_contains "$output" "[dry-run] code $repo" "Should focus project git root"
+}
+
+test_no_args_focuses_cwd_outside_git() {
+    # When called with no args outside a git repo, should focus cwd
+    local dir="$TEST_TMPDIR/standalone"
+    mkdir -p "$dir"
+
+    local output
+    output=$(cd "$dir" && FLOCUS_DRY_RUN=1 "$FLOCUS_CLI" 2>&1)
+
+    assert_contains "$output" "[dry-run] code $dir" "Should focus cwd when not in git repo"
+}
+
+test_no_args_focuses_registered_window() {
+    # When called with no args and a server is registered for the project,
+    # should focus that window (via code $git_root), not open a new one
+    local repo="$TEST_TMPDIR/myproject"
+    create_git_repo "$repo"
+    mkdir -p "$repo/src"
+
+    # Start test server for this workspace
+    local log_file="$TEST_TMPDIR/request.json"
+    local port
+    port=$(start_test_server "$log_file" "" "$repo")
+
+    # Register the workspace
+    echo '{
+        "version": 1,
+        "windows": [{
+            "workspace": "'"$repo"'",
+            "port": '"$port"',
+            "pid": 99999,
+            "lastActive": 1737561234567
+        }]
+    }' > "$XDG_CONFIG_HOME/flocus/registry.json"
+
+    local output
+    output=$(cd "$repo/src" && FLOCUS_NO_FOCUS=1 "$FLOCUS_CLI" 2>&1)
+
+    assert_contains "$output" "Focused: myproject" "Should report focusing registered project"
 }
 
 test_resolves_relative_path() {
@@ -675,7 +721,9 @@ main() {
     fi
 
     run_test "CLI exists and is executable" test_cli_exists_and_executable
-    run_test "Shows usage when no file argument" test_requires_file_argument
+    run_test "No args focuses project in git repo" test_no_args_focuses_project_in_git_repo
+    run_test "No args focuses cwd outside git" test_no_args_focuses_cwd_outside_git
+    run_test "No args focuses registered window" test_no_args_focuses_registered_window
     run_test "Resolves relative paths to absolute" test_resolves_relative_path
     run_test "Detects git root correctly" test_detects_git_root
     run_test "Sends correct JSON payload" test_sends_correct_json_payload
