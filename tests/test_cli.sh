@@ -230,6 +230,13 @@ test_no_args_focuses_registered_window() {
     assert_contains "$output" "Focused: myproject" "Should report focusing registered project"
 }
 
+test_nonexistent_path_errors_early() {
+    local output
+    output=$("$FLOCUS_CLI" "/tmp/does/not/exist/file.py" 2>&1 || true)
+
+    assert_contains "$output" "does not exist" "Should error on nonexistent path"
+}
+
 test_resolves_relative_path() {
     # Create a git repo and file
     local repo="$TEST_TMPDIR/myproject"
@@ -724,6 +731,7 @@ main() {
     run_test "No args focuses project in git repo" test_no_args_focuses_project_in_git_repo
     run_test "No args focuses cwd outside git" test_no_args_focuses_cwd_outside_git
     run_test "No args focuses registered window" test_no_args_focuses_registered_window
+    run_test "Nonexistent path errors early" test_nonexistent_path_errors_early
     run_test "Resolves relative paths to absolute" test_resolves_relative_path
     run_test "Detects git root correctly" test_detects_git_root
     run_test "Sends correct JSON payload" test_sends_correct_json_payload

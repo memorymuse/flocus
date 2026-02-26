@@ -463,14 +463,21 @@ main() {
     debug "Resolved path: $abs_path"
     log "resolved_path=$abs_path exists=$(test -e "$abs_path" && echo yes || echo no)"
 
-    # Step 2: Handle directories
+    # Step 2: Fail early if path doesn't exist
+    if [[ ! -e "$abs_path" ]]; then
+        log "exit=error reason=path_not_found path=$abs_path"
+        echo "Error: $abs_path does not exist" >&2
+        exit 1
+    fi
+
+    # Step 3: Handle directories
     if [[ -d "$abs_path" ]]; then
         log "mode=directory"
         open_directory "$abs_path"
         exit $?
     fi
 
-    # Step 3: Open file
+    # Step 4: Open file
     open_file "$abs_path"
 }
 
