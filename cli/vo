@@ -77,7 +77,7 @@ Commands:
 Options (for 'open'):
   -z, --zen     Zen mode: hide Explorer sidebar and panels
   --raw         Use VS Code's default editor (bypass custom editor mappings)
-  --all         Open all files in directory (NOT YET IMPLEMENTED)
+  -f, --find    Cross-project find via filedetective (searches all configured dirs)
   -h, --help    Show this help message
   --agent       Show context for AI agents
 
@@ -170,6 +170,7 @@ debug() {
 ZEN=false
 RAW=false
 LIST=false
+FIND=false
 FILE=""
 LINE=""
 
@@ -186,6 +187,10 @@ parse_args() {
                 ;;
             --raw)
                 RAW=true
+                shift
+                ;;
+            -f|--find)
+                FIND=true
                 shift
                 ;;
             -h|--help)
@@ -535,6 +540,52 @@ expand_glob() {
 }
 
 #-------------------------------------------------------------------------------
+# Cross-Project Find (via filedetective)
+#-------------------------------------------------------------------------------
+
+# Delegate file discovery to filedetective's find command.
+# Requires exactly one match; errors on zero or multiple.
+find_with_filedet() {
+    local pattern="$FILE"
+
+    if ! command -v filedet &>/dev/null; then
+        log "exit=error reason=filedet_not_found"
+        echo "Error: filedet not found. Install filedetective: uv tool install -e ~/projects/general-tools/filedetective" >&2
+        exit 1
+    fi
+
+    debug "Cross-project find: filedet find $pattern"
+    log "filedet_find pattern=$pattern"
+
+    local results
+    results=$(filedet find "$pattern" --json 2>/dev/null) || results=""
+
+    local match_count
+    match_count=$(echo "$results" | jq '.matched_count // 0' 2>/dev/null || echo "0")
+
+    if [[ "$match_count" -eq 0 ]]; then
+        log "exit=error reason=filedet_no_matches pattern=$pattern"
+        echo "Error: No files matching '$pattern' across project directories" >&2
+        exit 1
+    fi
+
+    if [[ "$match_count" -eq 1 ]]; then
+        FILE=$(echo "$results" | jq -r '.results[0].path' 2>/dev/null)
+        debug "filedet resolved: $pattern -> $FILE"
+        log "filedet_match pattern=$pattern result=$FILE"
+        return 0
+    fi
+
+    # Multiple matches — show them and bail
+    log "filedet_multiple pattern=$pattern count=$match_count"
+    echo "Multiple matches for '$pattern':" >&2
+    echo "$results" | jq -r '.results[].path' 2>/dev/null | head -20 | nl -ba -w2 -s'. ' >&2
+    echo "" >&2
+    echo "Narrow your pattern to match exactly one file." >&2
+    exit 1
+}
+
+#-------------------------------------------------------------------------------
 # Fallback
 #-------------------------------------------------------------------------------
 
@@ -580,7 +631,7 @@ main() {
     parse_args "$@"
 
     log "--- invocation: $0 $*"
-    log "pwd=$(pwd) file=$FILE line=$LINE zen=$ZEN raw=$RAW list=$LIST"
+    log "pwd=$(pwd) file=$FILE line=$LINE zen=$ZEN raw=$RAW list=$LIST find=$FIND"
 
     # Handle list mode
     if [[ "$LIST" == "true" ]]; then
@@ -595,6 +646,12 @@ main() {
         git_root=$(detect_git_root "$(pwd)")
         FILE="${git_root:-$(pwd)}"
         log "mode=focus_project target=$FILE"
+    fi
+
+    # Cross-project find: delegate to filedetective
+    if [[ "$FIND" == "true" && -n "$FILE" ]]; then
+        find_with_filedet
+        # FILE is now set to the single matching absolute path
     fi
 
     # Glob expansion: resolve wildcard patterns to concrete file paths
