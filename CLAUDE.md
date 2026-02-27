@@ -30,6 +30,9 @@ flocus/
    - Handles `/open` and `/files` requests
 
 2. **CLI** (`flocus`):
+   - No args: focuses current project's VS Code window (via git root)
+   - Glob patterns (`'*DESIGN*'`): searches project files via `git ls-files` or `find`
+   - `-f` flag: cross-project search via filedetective
    - Resolves file path, detects git root
    - Reads registry to find matching VS Code window
    - Sends HTTP POST to extension's `/open` endpoint
@@ -80,7 +83,7 @@ npm run package        # Creates .vsix file
 - [x] Registry read/write
 - [x] CLI with git detection, registry lookup, HTTP request
 - [x] Basic file opening
-- [x] Integration tests (44 total: 19 CLI + 25 extension)
+- [x] Integration tests (55 total: 30 CLI + 25 extension)
 - [x] Window focus (brings VS Code to foreground)
 - [x] Clean CLI output (`Opened: filename`)
 - [x] Zen mode (`-z` flag hides sidebar/panels)
@@ -94,6 +97,10 @@ npm run package        # Creates .vsix file
 - [x] Path-based fallback (files under any open workspace auto-route)
 - [x] Orphan workspace config (default window for orphan files via config.json)
 - [x] Agent context (`flocus --agent` for AI agent context)
+- [x] No-arg default (`vo` with no args focuses current project's VS Code window)
+- [x] Early exit on nonexistent paths (fails before registry/HTTP loop)
+- [x] Glob pattern expansion (`vo '*DESIGN*'` finds files in project, case-insensitive)
+- [x] Cross-project find (`vo -f SKILL.md` delegates to filedetective)
 
 ### Phase 2 (Pending)
 - [ ] WSL2 testing
